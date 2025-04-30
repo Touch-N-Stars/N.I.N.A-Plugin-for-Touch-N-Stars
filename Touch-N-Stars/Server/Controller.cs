@@ -3,6 +3,7 @@ using EmbedIO.Routing;
 using EmbedIO.WebApi;
 using NINA.Astrometry;
 using NINA.Core.Utility;
+using NINA.Equipment.Equipment.MyGuider.PHD2;
 using NINA.WPF.Base.SkySurvey;
 using System;
 using System.Collections;
@@ -32,6 +33,7 @@ public class ApiResponse {
 }
 
 public class Controller : WebApiController {
+    
 
     private static readonly List<string> excluded_members = new List<string>() { "GetEquipment", "RequestAll", "LoadPlugin" };
 
