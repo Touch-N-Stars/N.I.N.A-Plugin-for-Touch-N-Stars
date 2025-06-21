@@ -18,6 +18,16 @@ using TouchNStars.Utility;
 
 namespace TouchNStars.Server;
 
+public class FavoriteTarget {
+    public Guid Id { get; set; } = Guid.NewGuid(); // Wird automatisch gesetzt
+    public string Name { get; set; }
+    public double Ra { get; set; }
+    public double Dec { get; set; }
+    public string RaString { get; set; }
+    public string DecString { get; set; }
+    public string Rotation { get; set; }
+}
+
 public class NGCSearchResult {
     public string Name { get; set; }
     public double RA { get; set; }
@@ -30,12 +40,135 @@ public class ApiResponse {
     public string Error { get; set; }
     public int StatusCode { get; set; }
     public string Type { get; set; }
+
+
 }
 
 public class Controller : WebApiController {
     
 
     private static readonly List<string> excluded_members = new List<string>() { "GetEquipment", "RequestAll", "LoadPlugin" };
+    private static readonly string FavoritesFilePath = Path.Combine(
+     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+     "NINA", "TnsCache", "favorites.json"
+    );
+    private static readonly object _fileLock = new();
+
+
+
+
+    [Route(HttpVerbs.Post, "/favorites")]
+    public async Task<ApiResponse> AddFavoriteTarget() {
+        try {
+            var favorite = await HttpContext.GetRequestDataAsync<FavoriteTarget>();
+
+            if (favorite.Id == Guid.Empty)
+                favorite.Id = Guid.NewGuid();
+
+            List<FavoriteTarget> currentFavorites = new();
+            if (File.Exists(FavoritesFilePath)) {
+                var json = await File.ReadAllTextAsync(FavoritesFilePath);
+                currentFavorites = System.Text.Json.JsonSerializer.Deserialize<List<FavoriteTarget>>(json);
+            }
+
+            currentFavorites.Add(favorite);
+            lock (_fileLock) {
+                Directory.CreateDirectory(Path.GetDirectoryName(FavoritesFilePath));
+                var updatedJson = System.Text.Json.JsonSerializer.Serialize(
+                    currentFavorites,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+
+                File.WriteAllText(FavoritesFilePath, updatedJson);
+            }
+
+            return new ApiResponse {
+                Success = true,
+                Response = favorite,
+                StatusCode = 200,
+                Type = "FavoriteTarget"
+            };
+        } catch (Exception ex) {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    [Route(HttpVerbs.Get, "/favorites")]
+    public async Task<List<FavoriteTarget>> GetFavoriteTargets() {
+        if (!File.Exists(FavoritesFilePath)) return new List<FavoriteTarget>();
+
+        var json = await File.ReadAllTextAsync(FavoritesFilePath);
+        return System.Text.Json.JsonSerializer.Deserialize<List<FavoriteTarget>>(json);
+    }
+
+    [Route(HttpVerbs.Delete, "/favorites/{id}")]
+    public async Task<ApiResponse> DeleteFavoriteTarget(Guid id) {
+        try {
+            if (!File.Exists(FavoritesFilePath)) {
+                return new ApiResponse { Success = false, Error = "Keine Daten vorhanden", StatusCode = 404 };
+            }
+
+            var json = await File.ReadAllTextAsync(FavoritesFilePath);
+            var favorites = System.Text.Json.JsonSerializer.Deserialize<List<FavoriteTarget>>(json);
+
+            var toRemove = favorites.FirstOrDefault(f => f.Id == id);
+            if (toRemove == null) {
+                return new ApiResponse { Success = false, Error = "Eintrag nicht gefunden", StatusCode = 404 };
+            }
+
+            favorites.Remove(toRemove);
+            await File.WriteAllTextAsync(FavoritesFilePath, System.Text.Json.JsonSerializer.Serialize(favorites, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+
+            return new ApiResponse { Success = true, Response = $"Favorit mit Id '{id}' gelöscht", StatusCode = 200 };
+        } catch (Exception ex) {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500 };
+        }
+    }
+
+    [Route(HttpVerbs.Put, "/favorites/{id}")]
+    public async Task<ApiResponse> UpdateFavoriteTarget(Guid id) {
+        try {
+            var updatedTarget = await HttpContext.GetRequestDataAsync<FavoriteTarget>();
+
+            if (!File.Exists(FavoritesFilePath)) {
+                return new ApiResponse { Success = false, Error = "Keine Daten vorhanden", StatusCode = 404 };
+            }
+
+            var json = await File.ReadAllTextAsync(FavoritesFilePath);
+            var favorites = System.Text.Json.JsonSerializer.Deserialize<List<FavoriteTarget>>(json);
+
+            var existing = favorites.FirstOrDefault(f => f.Id == id);
+            if (existing == null) {
+                return new ApiResponse { Success = false, Error = "Eintrag nicht gefunden", StatusCode = 404 };
+            }
+
+            existing.Name = updatedTarget.Name;
+            existing.Ra = updatedTarget.Ra;
+            existing.Dec = updatedTarget.Dec;
+            existing.DecString = updatedTarget.DecString;
+            existing.RaString = updatedTarget.RaString;
+            existing.Rotation = updatedTarget.Rotation;
+
+
+            await File.WriteAllTextAsync(FavoritesFilePath, System.Text.Json.JsonSerializer.Serialize(favorites, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+
+            return new ApiResponse { Success = true, Response = existing, StatusCode = 200 };
+        } catch (Exception ex) {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500 };
+        }
+    }
+
+
 
 
     [Route(HttpVerbs.Get, "/logs")]
@@ -199,7 +332,7 @@ public class Controller : WebApiController {
                 }
             };
             process.Start();
-            
+
             return new Dictionary<string, object>() {
                 { "success", true },
                 { "message", "System shutdown initiated" }
@@ -226,7 +359,7 @@ public class Controller : WebApiController {
                 }
             };
             process.Start();
-            
+
             return new Dictionary<string, object>() {
                 { "success", true },
                 { "message", "System restart initiated" }
@@ -269,6 +402,32 @@ public class Controller : WebApiController {
         } catch (Exception ex) {
             Logger.Error(ex);
             throw;
+        }
+    }
+
+    [Route(HttpVerbs.Get, "/get-api-port")]
+    public async Task<int> GetApiPort() {
+        return await TouchNStars.Communicator.GetPort(true);
+    }
+
+    [Route(HttpVerbs.Get, "/version")]
+    public object GetAssemblyVersion() {
+        try {
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+
+            return new Dictionary<string, object>
+            {
+            { "success", true },
+            { "version", version }
+        };
+        } catch (Exception ex) {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new Dictionary<string, object>
+            {
+            { "success", false },
+            { "error", ex.Message }
+        };
         }
     }
 }

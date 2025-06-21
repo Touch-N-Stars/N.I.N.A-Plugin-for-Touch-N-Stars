@@ -1,8 +1,6 @@
-using EmbedIO;
+﻿using EmbedIO;
 using EmbedIO.Actions;
-using EmbedIO.Files;
 using EmbedIO.WebApi;
-using EmbedIO.Cors;
 using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
 using System;
@@ -12,6 +10,7 @@ using System.Reflection;
 using System.Threading;
 using TouchNStars.Properties;
 using System.Threading.Tasks;
+using System.Text;
 
 namespace TouchNStars.Server {
     public class TouchNStarsServer {
@@ -21,12 +20,15 @@ namespace TouchNStars.Server {
 
         private readonly List<string> appEndPoints = ["equipment", "camera", "autofocus", "mount", "guider", "sequence", "settings", "seq-mon", "flat", "dome", "logs", "switch", "flats", "stellarium"];
 
+        private int port;
+        public TouchNStarsServer(int port) => this.port = port;
+
         public void CreateServer() {
             string assemblyFolder = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string webAppDir = Path.Combine(assemblyFolder, "app");
 
             WebServer = new WebServer(o => o
-                .WithUrlPrefix($"http://*:{Settings.Default.Port}")
+                .WithUrlPrefix($"http://*:{port}")
                 .WithMode(HttpListenerMode.EmbedIO))
                 .WithModule(new CustomHeaderModule());
 
@@ -71,8 +73,6 @@ namespace TouchNStars.Server {
 
         // [STAThread]
         private void APITask(WebServer server) {
-            // string ipAdress = CoreUtility.GetLocalNames()["IPADRESS"];
-            // Logger.Info($"starting web server, listening at {ipAdress}:{Port}");
             Logger.Info("Touch-N-Stars Webserver starting");
 
             try {
@@ -89,17 +89,16 @@ namespace TouchNStars.Server {
         internal CustomHeaderModule() : base("/") {
         }
 
-        protected override Task OnRequestAsync(IHttpContext context) {
+        protected override async Task OnRequestAsync(IHttpContext context) {
+            context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 
-            context.Response.Headers.Add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-            context.Response.Headers.Add("Access-Control-Allow-Headers", "content-type,authorization");
-
-            if (Settings.Default.UseAccessHeader) {
-                context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
-            } else {
-                context.Response.Headers.Add("Access-Control-Allow-Origin", "http://localhost");
+            if (context.Request.HttpVerb == HttpVerbs.Options) {
+                context.Response.StatusCode = 200;
+                await context.SendStringAsync(string.Empty, "text/plain", Encoding.UTF8); 
+                return;
             }
-            return Task.CompletedTask;
         }
 
         public override bool IsFinalHandler => false;

@@ -6,8 +6,8 @@ using System.Runtime.InteropServices;
 
 // [MANDATORY] The assembly versioning
 //Should be incremented for each new release build of a plugin
-[assembly: AssemblyVersion("1.0.4.4")]
-[assembly: AssemblyFileVersion("1.0.4.4")]
+[assembly: AssemblyVersion("1.0.8.0")]
+[assembly: AssemblyFileVersion("1.0.8.0")]
 
 // [MANDATORY] The name of your plugin
 [assembly: AssemblyTitle("Touch 'N' Stars")]
@@ -52,27 +52,32 @@ using System.Runtime.InteropServices;
 //[Optional] An in-depth description of your plugin
 [assembly: AssemblyMetadata("LongDescription", @"# Touch'N'Stars: WebApp for Mobile Control of NINA
 
-## **Android Build:**
-Available at [GitHub Releases](https://github.com/Touch-N-Stars/Touch-N-Stars/releases)
-- First time setup requires a nina instance configuration in settings
-
-## 🏁 **Purpose of the WebApp**  
+## **Purpose of the Plugin**  
 The application aims to make controlling and adjusting already configured profiles easier - directly through a tablet or smartphone. 
 This makes handling more mobile and convenient, especially when setting up equipment and starting imaging sessions.
 
-## 🧩 **Important Notes**
-- This web app **requires a fully configured and running installation of NINA**.
-- It requires the **Advanced API** plugin in the latest version with the following settings:
-  - API v2 must be enabled
-  - Port 1888 must be set
-  - ""Use Access-Control-Allow-Origin Header"" must be enabled
-- For Three Point Polar Alignment, version 2.2.2.0 or newer is required.
-- It is intended as a complement to the desktop software and provides mobile support for basic functions.
-- I assume no liability
-- **more info and a wiki** can be found on the [GitHub](https://github.com/Touch-N-Stars/Touch-N-Stars/)
-  
-## 🔧 **Installation**
-- After installing the plugin, Touch'N'Stars can be accessed via **http**://<NINA - PC - IP>:5000.
+---
+
+## **Installation:**
+**Please see the instructions in our Wiki** [GitHub Wiki](https://github.com/Touch-N-Stars/Touch-N-Stars/wiki/Touch'N'Stars-Wiki)
+
+---
+
+## **Access Touch'N'Stars from any device:**
+Open a browser on your device and enter:
+```
+http://<your-NINA-PC-IP-address>:<port>
+```
+
+---
+
+## **Android App:**
+Available at [Play Store](https://play.google.com/store/apps/details?id=com.TouchNStars.dev)
+
+## **iOS App:**
+Available at [App Store](https://apps.apple.com/us/app/touch-n-stars/id6744902856)
+
+---
 
 ## 💙 **Acknowledgements**  
 My thanks go to the entire **NINA** development team, whose great work makes this web app possible.

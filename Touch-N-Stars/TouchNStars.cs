@@ -14,7 +14,7 @@ using TouchNStars.Utility;
 using TouchNStars.Server;
 using Settings = TouchNStars.Properties.Settings;
 using System.Collections.Generic;
-using System;
+using System.Windows;
 
 namespace TouchNStars {
 
@@ -43,6 +43,8 @@ namespace TouchNStars {
 
         internal static Communicator Communicator { get; private set; }
 
+        private static TouchNStars instance;
+
 
         [ImportingConstructor]
         public TouchNStars(IProfileService profileService,
@@ -57,6 +59,8 @@ namespace TouchNStars {
                 CoreUtil.SaveSettings(Settings.Default);
             }
 
+            instance = this;
+
             PluginId = this.Identifier;
             Mediators = new Mediators(DeepSkyObjectSearchVM,
                             imageDataFactory,
@@ -65,15 +69,54 @@ namespace TouchNStars {
                             guider,
                             broker);
 
+            UpdateDefaultPortCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(() => {
+                Port = CachedPort;
+                CachedPort = Port; // This may look useless, but that way the visibility only changes when cachedPort changes and not when the user enters a new port
+            });
+
             Communicator = new Communicator();
 
             SetHostNames();
 
             if (AppEnabled) {
-                server = new TouchNStarsServer();
+                CachedPort = CoreUtility.GetNearestAvailablePort(Port);
+                server = new TouchNStarsServer(CachedPort);
                 server.Start();
+                ShowNotificationIfPortChanged();
             }
         }
+
+        public CommunityToolkit.Mvvm.Input.RelayCommand UpdateDefaultPortCommand { get; set; }
+
+        private int cachedPort = -1;
+        public int CachedPort {
+            get => cachedPort;
+            set {
+                cachedPort = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CachedPort)));
+                PortVisibility = ((CachedPort != Port) && AppEnabled) ? Visibility.Visible : Visibility.Hidden;
+                SetHostNames();
+            }
+        }
+
+        private Visibility portVisibility = Visibility.Hidden;
+        public Visibility PortVisibility {
+            get => portVisibility;
+            set {
+                portVisibility = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PortVisibility)));
+            }
+        }
+        public static int GetCachedPort() {
+            return instance.CachedPort;
+        }
+
+        private void ShowNotificationIfPortChanged() {
+            if (CachedPort != Port) {
+                Notification.ShowInformation("Touch 'N' Stars launched on a different port: " + CachedPort);
+            }
+        }
+
 
         public override Task Teardown() {
             server.Stop();
@@ -100,13 +143,17 @@ namespace TouchNStars {
                 RaisePropertyChanged();
 
                 if (value) {
-                    server = new TouchNStarsServer();
+                    CachedPort = CoreUtility.GetNearestAvailablePort(Port);
+                    server = new TouchNStarsServer(CachedPort);
                     server.Start();
                     SetHostNames();
                     Notification.ShowSuccess("Touch 'N' Stars started!");
+                    ShowNotificationIfPortChanged();
                 } else {
                     server.Stop();
                     Notification.ShowSuccess("Touch 'N' Stars stopped!");
+                    server = null;
+                    CachedPort = -1;
                 }
             }
         }
