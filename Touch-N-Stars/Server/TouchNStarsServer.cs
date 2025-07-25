@@ -35,7 +35,10 @@ namespace TouchNStars.Server {
             foreach (string endPoint in appEndPoints) {
                 WebServer = WebServer.WithModule(new RedirectModule("/" + endPoint, "/")); // redirect all reloads of the app to the root
             }
-            WebServer = WebServer.WithWebApi("/api", m => m.WithController<Controller>()); // Register the controller, which will be used to handle all the api requests which were previously in server.py
+            WebServer = WebServer.WithWebApi("/api", m => m
+                 .WithController<Controller>()
+                 .WithController<Phd2Controller>()
+             );
             WebServer = WebServer.WithStaticFolder("/", webAppDir, false); // Register the static folder, which will be used to serve the web app
         }
 
