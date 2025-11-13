@@ -6,6 +6,8 @@ using NINA.Core.Utility.Notification;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using TouchNStars.Properties;
@@ -15,12 +17,17 @@ using System.Text;
 namespace TouchNStars.Server {
     public class TouchNStarsServer {
         private Thread serverThread;
+        private Thread broadcastThread;
         private CancellationTokenSource apiToken;
+        private CancellationTokenSource broadcastToken;
         public WebServer WebServer;
 
         private readonly List<string> appEndPoints = ["equipment", "camera", "autofocus", "mount", "guider", "sequence", "settings", "seq-mon", "flat", "dome", "logs", "switch", "flats", "stellarium", "settings", "rotator", "filterwheel", "plugin1", "plugin2", "plugin3", "plugin4", "plugin5", "plugin6", "plugin7", "plugin8", "plugin9"];
 
         private int port;
+        private const int BROADCAST_PORT = 37020;
+        private const string PLUGIN_IDENTIFIER = "NINA-TouchNStars";
+        
         public TouchNStarsServer(int port) => this.port = port;
 
         public void CreateServer() {
@@ -51,6 +58,9 @@ namespace TouchNStars.Server {
                     serverThread.Start();
                     BackgroundWorker.MonitorLogForEvents();
                     BackgroundWorker.MonitorLastAF();
+                    
+                    // Start UDP broadcast
+                    StartBroadcast();
                 }
             } catch (Exception ex) {
                 Logger.Error($"failed to start web server: {ex}");
@@ -59,6 +69,9 @@ namespace TouchNStars.Server {
 
         public void Stop() {
             try {
+                // Stop UDP broadcast
+                StopBroadcast();
+                
                 apiToken?.Cancel();
                 WebServer?.Dispose();
                 WebServer = null;
@@ -81,6 +94,56 @@ namespace TouchNStars.Server {
                     Notification.ShowError($"Failed to start web server, see NINA log for details");
                 } catch (Exception notificationEx) {
                     Logger.Warning($"Failed to show error notification: {notificationEx.Message}");
+                }
+            }
+        }
+
+        private void StartBroadcast() {
+            try {
+                Logger.Info("Starting Touch-N-Stars network discovery broadcast");
+                broadcastToken = new CancellationTokenSource();
+                broadcastThread = new Thread(() => BroadcastTask(broadcastToken.Token)) {
+                    Name = "Touch-N-Stars Broadcast Thread",
+                    IsBackground = true
+                };
+                broadcastThread.Start();
+            } catch (Exception ex) {
+                Logger.Error($"Failed to start broadcast: {ex}");
+            }
+        }
+
+        private void StopBroadcast() {
+            try {
+                broadcastToken?.Cancel();
+                broadcastThread?.Join(1000);
+                Logger.Info("Touch-N-Stars network discovery broadcast stopped");
+            } catch (Exception ex) {
+                Logger.Error($"Failed to stop broadcast: {ex}");
+            }
+        }
+
+        private void BroadcastTask(CancellationToken token) {
+            using var udpClient = new UdpClient();
+            udpClient.EnableBroadcast = true;
+            var broadcastEndpoint = new IPEndPoint(IPAddress.Broadcast, BROADCAST_PORT);
+
+            string hostname = Dns.GetHostName();
+            string ipAddress = Utility.CoreUtility.GetIPv4Address();
+            
+            while (!token.IsCancellationRequested) {
+                try {
+                    // Create broadcast message with plugin identifier, port, hostname, and IP
+                    string message = $"{PLUGIN_IDENTIFIER}|Port:{port}|Host:{hostname}|IP:{ipAddress}";
+                    byte[] data = Encoding.UTF8.GetBytes(message);
+                    
+                    udpClient.Send(data, data.Length, broadcastEndpoint);
+                    Logger.Trace($"Broadcast sent: {message}");
+                    
+                    // Wait 5 seconds before next broadcast or until cancellation
+                    token.WaitHandle.WaitOne(5000);
+                } catch (Exception ex) when (!token.IsCancellationRequested) {
+                    Logger.Error($"Error during broadcast: {ex}");
+                    token.WaitHandle.WaitOne(5000);
                 }
             }
         }
