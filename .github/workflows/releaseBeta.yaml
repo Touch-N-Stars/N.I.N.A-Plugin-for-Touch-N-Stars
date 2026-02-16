@@ -22,6 +22,12 @@ jobs:
         run: |
           mkdir packages
           mkdir packages/${{ env.PLUGIN_NAME }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      
       - name: Pull and build external repository
         run: |
           git clone --branch ${{ inputs.app_branch }} https://github.com/JohannesWorks/Touch-N-Stars.git external_repo

@@ -71,7 +71,9 @@ namespace TouchNStars.Server.Controllers {
 
                 BahtinovAnalysisRequest request;
                 try {
-                    request = JsonSerializer.Deserialize<BahtinovAnalysisRequest>(metadataJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    request = JsonSerializer.Deserialize<BahtinovAnalysisRequest>(metadataJson, new JsonSerializerOptions {
+                        PropertyNameCaseInsensitive = true
+                    });
                 } catch (JsonException ex) {
                     Logger.Warning($"Bahtinov metadata parse failed: {ex.Message}");
                     throw new ArgumentException("Invalid metadata JSON supplied in X-Bahtinov-Metadata header.", ex);
@@ -107,10 +109,14 @@ namespace TouchNStars.Server.Controllers {
             static bool Matches(string candidate, string expected) => candidate.StartsWith(expected, StringComparison.OrdinalIgnoreCase);
 
             return Matches(contentType, "application/octet-stream")
+                || Matches(contentType, "application/x-fits")
+                || Matches(contentType, "application/fit")
                 || Matches(contentType, "application/fits")
                 || Matches(contentType, "image/jpeg")
                 || Matches(contentType, "image/png")
                 || Matches(contentType, "image/tiff")
+                || Matches(contentType, "image/fits")
+                || Matches(contentType, "image/fit")
                 || Matches(contentType, "image/x-fits");
         }
 
