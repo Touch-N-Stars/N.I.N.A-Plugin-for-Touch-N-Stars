@@ -3,6 +3,7 @@ using EmbedIO.Routing;
 using EmbedIO.WebApi;
 using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
+using NINA.Equipment.Interfaces;
 using NINA.Sequencer;
 using NINA.Sequencer.Conditions;
 using NINA.Sequencer.Container;
@@ -2972,6 +2973,34 @@ namespace TouchNStars.Server.Controllers
                     return list;
                 }
                 catch { /* Fall through to other handlers */ }
+            }
+
+            // Handle IWritableSwitch (e.g. PowerBoxWritableSwitch) - serialize all switch fields
+            if (value is IWritableSwitch writableSwitch)
+            {
+                return new Hashtable
+                {
+                    { "Id", writableSwitch.Id },
+                    { "Name", writableSwitch.Name },
+                    { "Description", writableSwitch.Description },
+                    { "Value", writableSwitch.Value },
+                    { "Minimum", writableSwitch.Minimum },
+                    { "Maximum", writableSwitch.Maximum },
+                    { "StepSize", writableSwitch.StepSize },
+                    { "TargetValue", writableSwitch.TargetValue },
+                };
+            }
+
+            // Handle ISwitch (read-only switches)
+            if (value is ISwitch sw)
+            {
+                return new Hashtable
+                {
+                    { "Id", sw.Id },
+                    { "Name", sw.Name },
+                    { "Description", sw.Description },
+                    { "Value", sw.Value },
+                };
             }
 
             // Handle IDateTimeProvider - serialize as {Name, FullTypeName}
