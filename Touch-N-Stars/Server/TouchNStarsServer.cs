@@ -61,6 +61,7 @@ namespace TouchNStars.Server {
                 .WithController<SequenceController>()    // Sequence item discovery and management
                 .WithController<TenMicronController>()   // 10micron model builder integration
                 .WithController<LocationController>()    // Profile & mount site location
+                .WithController<ProfileController>()     // NINA profile management
                 .WithController<FlatDeviceController>()  // Flat device multi-filter capture
                 .WithController<FilterOffsetController>() // DarksCustoms filter offset calculator
                 .WithController<AlpacaDirectController>() // AlpacaDirect static-IP Alpaca device settings
