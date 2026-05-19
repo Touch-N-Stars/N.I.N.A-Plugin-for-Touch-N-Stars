@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using NINA.Core.Utility;
 using TouchNStars.PHD2;
 
@@ -2923,6 +2924,146 @@ namespace TouchNStars.Server.Services
                     throw;
                 }
             });
+        }
+
+        public async Task<JObject> GetDarkLibraryInfoAsync()
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        return client.GetDarkLibraryInfo();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get dark library info: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task LoadDarkLibraryAsync()
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.LoadDarkLibrary();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to load dark library: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task UnloadDarkLibraryAsync()
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.UnloadDarkLibrary();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to unload dark library: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task DeleteDarkLibraryAsync()
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.DeleteDarkLibrary();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to delete dark library: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task StartBuildDarkLibraryAsync(int[] expTimesMs, int frameCount)
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.StartBuildDarkLibrary(expTimesMs, frameCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to start dark library build: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task CancelBuildDarkLibraryAsync()
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.CancelBuildDarkLibrary();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to cancel dark library build: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public DarkBuildStatus GetDarkBuildStatus()
+        {
+            lock (lockObject)
+            {
+                return client?.DarkBuild ?? new DarkBuildStatus();
+            }
         }
 
         public async Task<bool> GetGuideOutputEnabledAsync()

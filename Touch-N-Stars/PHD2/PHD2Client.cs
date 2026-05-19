@@ -100,6 +100,17 @@ namespace TouchNStars.PHD2
         public double Dy { get; set; }
     }
 
+    public class DarkBuildStatus
+    {
+        public bool Active { get; set; }
+        public bool Complete { get; set; }
+        public bool Success { get; set; }
+        public int Frame { get; set; }
+        public int TotalFrames { get; set; }
+        public int ExposureMs { get; set; }
+        public string Error { get; set; }
+    }
+
     public class StarImageData
     {
         public int Frame { get; set; }
@@ -248,6 +259,7 @@ namespace TouchNStars.PHD2
         public StarLostInfo LastStarLost { get; private set; }
         public GuideStarInfo CurrentStar { get; private set; } = new GuideStarInfo();
         public CalibrationStepInfo LastCalibrationStep { get; private set; }
+        public DarkBuildStatus DarkBuild { get; private set; } = new DarkBuildStatus();
         private SettleProgress settle;
 
         public PHD2Client(string hostname = "localhost", uint instance = 1)
@@ -528,6 +540,32 @@ namespace TouchNStars.PHD2
                         settle = doneProgress;
                     }
                     accumActive = true;
+                    break;
+
+                case "DarkLibraryBuildProgress":
+                    DarkBuild = new DarkBuildStatus
+                    {
+                        Active = true,
+                        Complete = false,
+                        Success = false,
+                        Frame = eventObj["Frame"] != null ? (int)eventObj["Frame"] : 0,
+                        TotalFrames = eventObj["TotalFrames"] != null ? (int)eventObj["TotalFrames"] : 0,
+                        ExposureMs = eventObj["ExposureMs"] != null ? (int)eventObj["ExposureMs"] : 0,
+                        Error = null
+                    };
+                    break;
+
+                case "DarkLibraryBuildComplete":
+                    DarkBuild = new DarkBuildStatus
+                    {
+                        Active = false,
+                        Complete = true,
+                        Success = eventObj["Success"] != null && (bool)eventObj["Success"],
+                        Frame = DarkBuild.TotalFrames,
+                        TotalFrames = DarkBuild.TotalFrames,
+                        ExposureMs = DarkBuild.ExposureMs,
+                        Error = (string)eventObj["Error"]
+                    };
                     break;
             }
         }
@@ -1361,6 +1399,48 @@ namespace TouchNStars.PHD2
             Call("set_max_dec_duration", new JValue(ms));
         }
 
+        public JObject GetDarkLibraryInfo()
+        {
+            CheckConnected();
+            var result = Call("get_dark_library_info");
+            return (JObject)result["result"];
+        }
+
+        public void LoadDarkLibrary()
+        {
+            CheckConnected();
+            Call("load_dark_library");
+        }
+
+        public void UnloadDarkLibrary()
+        {
+            CheckConnected();
+            Call("unload_dark_library");
+        }
+
+        public void DeleteDarkLibrary()
+        {
+            CheckConnected();
+            Call("delete_dark_library");
+        }
+
+        public void StartBuildDarkLibrary(int[] expTimesMs, int frameCount)
+        {
+            CheckConnected();
+            var p = new JObject
+            {
+                ["expTimes"] = new JArray(expTimesMs.Cast<object>().ToArray()),
+                ["frameCount"] = frameCount
+            };
+            Call("start_build_dark_library", p);
+        }
+
+        public void CancelBuildDarkLibrary()
+        {
+            CheckConnected();
+            Call("cancel_build_dark_library");
+        }
+
         public bool GetGuideOutputEnabled()
         {
             CheckConnected();
@@ -1848,10 +1928,10 @@ namespace TouchNStars.PHD2
                 {
                     case JTokenType.Boolean: info[prop.Name] = (bool)val; break;
                     case JTokenType.Integer: info[prop.Name] = (long)val; break;
-                    case JTokenType.Float:   info[prop.Name] = (double)val; break;
-                    case JTokenType.String:  info[prop.Name] = (string)val; break;
-                    case JTokenType.Null:    info[prop.Name] = null; break;
-                    default:                 info[prop.Name] = val.ToString(); break;
+                    case JTokenType.Float: info[prop.Name] = (double)val; break;
+                    case JTokenType.String: info[prop.Name] = (string)val; break;
+                    case JTokenType.Null: info[prop.Name] = null; break;
+                    default: info[prop.Name] = val.ToString(); break;
                 }
             }
             return info;

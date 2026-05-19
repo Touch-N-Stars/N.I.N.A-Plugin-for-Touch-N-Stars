@@ -1470,6 +1470,220 @@ public class PHD2Controller : WebApiController
     }
 
     /// <summary>
+    /// GET /api/phd2/dark-library/info - Get dark library info
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/dark-library/info")]
+    public async Task<ApiResponse> GetPHD2DarkLibraryInfo()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var info = await phd2Service.GetDarkLibraryInfoAsync();
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new
+                {
+                    Exists         = info.Value<bool>("exists"),
+                    Loaded         = info.Value<bool>("loaded"),
+                    NumDarks       = info.Value<int>("numDarks"),
+                    MinExposureSec = info.Value<double>("minExposureSec"),
+                    MaxExposureSec = info.Value<double>("maxExposureSec"),
+                },
+                StatusCode = 200,
+                Type = "PHD2DarkLibrary"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/dark-library/load - Load the dark library
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/dark-library/load")]
+    public async Task<ApiResponse> LoadPHD2DarkLibrary()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            await phd2Service.LoadDarkLibraryAsync();
+            return new ApiResponse { Success = true, Response = new { Loaded = true }, StatusCode = 200, Type = "PHD2DarkLibrary" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/dark-library/unload - Unload the dark library
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/dark-library/unload")]
+    public async Task<ApiResponse> UnloadPHD2DarkLibrary()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            await phd2Service.UnloadDarkLibraryAsync();
+            return new ApiResponse { Success = true, Response = new { Unloaded = true }, StatusCode = 200, Type = "PHD2DarkLibrary" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/phd2/dark-library - Delete the dark library file
+    /// </summary>
+    [Route(HttpVerbs.Delete, "/phd2/dark-library")]
+    public async Task<ApiResponse> DeletePHD2DarkLibrary()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            await phd2Service.DeleteDarkLibraryAsync();
+            return new ApiResponse { Success = true, Response = new { Deleted = true }, StatusCode = 200, Type = "PHD2DarkLibrary" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/dark-library/build - Start building a dark library.
+    /// Body: { "expTimesMs": [500, 1000, 2000], "frameCount": 10 }
+    /// Returns immediately; progress arrives as PHD2 events DarkLibraryBuildProgress / DarkLibraryBuildComplete.
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/dark-library/build")]
+    public async Task<ApiResponse> StartPHD2DarkLibraryBuild()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null || !requestData.ContainsKey("expTimesMs") || requestData["expTimesMs"] == null)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "expTimesMs array is required", StatusCode = 400, Type = "Error" };
+            }
+
+            int[] expTimesMs;
+            try
+            {
+                var arrVal = requestData["expTimesMs"];
+                int[] parsed = null;
+                if (arrVal is System.Collections.Generic.List<object> list)
+                {
+                    parsed = list.Select(o => Convert.ToInt32(o)).ToArray();
+                }
+                else if (arrVal is object[] objArr)
+                {
+                    parsed = objArr.Select(o => Convert.ToInt32(o)).ToArray();
+                }
+                else if (arrVal is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    parsed = je.EnumerateArray().Select(e => e.GetInt32()).ToArray();
+                }
+                if (parsed == null || parsed.Length == 0)
+                    throw new ArgumentException("empty");
+                expTimesMs = parsed;
+            }
+            catch (Exception innerEx)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "expTimesMs must be a non-empty array of integers (ms)", StatusCode = 400, Type = "Error" };
+            }
+
+            int frameCount = 5;
+            if (requestData.ContainsKey("frameCount") && requestData["frameCount"] != null)
+            {
+                if (!int.TryParse(requestData["frameCount"].ToString(), out frameCount) || frameCount < 1)
+                {
+                    HttpContext.Response.StatusCode = 400;
+                    return new ApiResponse { Success = false, Error = "frameCount must be a positive integer", StatusCode = 400, Type = "Error" };
+                }
+            }
+
+            await phd2Service.StartBuildDarkLibraryAsync(expTimesMs, frameCount);
+            return new ApiResponse { Success = true, Response = new { Building = true }, StatusCode = 200, Type = "PHD2DarkLibrary" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/dark-library/cancel-build - Cancel an in-progress dark library build
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/dark-library/cancel-build")]
+    public async Task<ApiResponse> CancelPHD2DarkLibraryBuild()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            await phd2Service.CancelBuildDarkLibraryAsync();
+            return new ApiResponse { Success = true, Response = new { Cancelled = true }, StatusCode = 200, Type = "PHD2DarkLibrary" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// GET /api/phd2/dark-library/build-status - Poll dark library build progress
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/dark-library/build-status")]
+    public Task<ApiResponse> GetPHD2DarkLibraryBuildStatus()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var status = phd2Service.GetDarkBuildStatus();
+            return Task.FromResult(new ApiResponse
+            {
+                Success = true,
+                Response = new
+                {
+                    status.Active,
+                    status.Complete,
+                    status.Success,
+                    status.Frame,
+                    status.TotalFrames,
+                    status.ExposureMs,
+                    status.Error
+                },
+                StatusCode = 200,
+                Type = "PHD2DarkLibraryBuildStatus"
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return Task.FromResult(new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" });
+        }
+    }
+
+    /// <summary>
     /// POST /api/phd2/set-guide-output-enabled - Enable/disable guide output
     /// </summary>
     [Route(HttpVerbs.Post, "/phd2/set-guide-output-enabled")]
