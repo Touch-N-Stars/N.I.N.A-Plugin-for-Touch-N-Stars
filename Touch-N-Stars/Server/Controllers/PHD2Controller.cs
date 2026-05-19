@@ -1368,6 +1368,108 @@ public class PHD2Controller : WebApiController
     }
 
     /// <summary>
+    /// GET /api/phd2/get-max-ra-duration - Get max RA guide pulse duration (ms).
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/get-max-ra-duration")]
+    public async Task<ApiResponse> GetPHD2MaxRaDuration()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var value = await phd2Service.GetMaxRaDurationAsync();
+            return new ApiResponse { Success = true, Response = new { MaxRaDuration = value }, StatusCode = 200, Type = "PHD2Parameter" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/set-max-ra-duration - Set max RA guide pulse duration (ms).
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/set-max-ra-duration")]
+    public async Task<ApiResponse> SetPHD2MaxRaDuration()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null || !requestData.ContainsKey("ms") || requestData["ms"] == null)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "ms parameter is required", StatusCode = 400, Type = "Error" };
+            }
+            if (!int.TryParse(requestData["ms"].ToString(), out int ms))
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "ms must be an integer", StatusCode = 400, Type = "Error" };
+            }
+            await phd2Service.SetMaxRaDurationAsync(ms);
+            return new ApiResponse { Success = true, Response = new { MaxRaDurationSet = ms }, StatusCode = 200, Type = "PHD2Parameter" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// GET /api/phd2/get-max-dec-duration - Get max DEC guide pulse duration (ms).
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/get-max-dec-duration")]
+    public async Task<ApiResponse> GetPHD2MaxDecDuration()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var value = await phd2Service.GetMaxDecDurationAsync();
+            return new ApiResponse { Success = true, Response = new { MaxDecDuration = value }, StatusCode = 200, Type = "PHD2Parameter" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
+    /// POST /api/phd2/set-max-dec-duration - Set max DEC guide pulse duration (ms).
+    /// </summary>
+    [Route(HttpVerbs.Post, "/phd2/set-max-dec-duration")]
+    public async Task<ApiResponse> SetPHD2MaxDecDuration()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null || !requestData.ContainsKey("ms") || requestData["ms"] == null)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "ms parameter is required", StatusCode = 400, Type = "Error" };
+            }
+            if (!int.TryParse(requestData["ms"].ToString(), out int ms))
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse { Success = false, Error = "ms must be an integer", StatusCode = 400, Type = "Error" };
+            }
+            await phd2Service.SetMaxDecDurationAsync(ms);
+            return new ApiResponse { Success = true, Response = new { MaxDecDurationSet = ms }, StatusCode = 200, Type = "PHD2Parameter" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse { Success = false, Error = ex.Message, StatusCode = 500, Type = "Error" };
+        }
+    }
+
+    /// <summary>
     /// POST /api/phd2/set-guide-output-enabled - Enable/disable guide output
     /// </summary>
     [Route(HttpVerbs.Post, "/phd2/set-guide-output-enabled")]
@@ -2580,6 +2682,49 @@ public class PHD2Controller : WebApiController
                 Type = "Error"
             });
             Response.OutputStream.Write(System.Text.Encoding.UTF8.GetBytes(errorResponse));
+        }
+    }
+
+    /// <summary>
+    /// GET /api/phd2/camera/info - Get detailed info about the currently selected guide camera
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/camera/info")]
+    public async Task<ApiResponse> GetCameraInfo()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            if (!phd2Service.IsConnected)
+            {
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "PHD2 is not connected",
+                    StatusCode = 400,
+                    Type = "PHD2NotConnected"
+                };
+            }
+
+            var info = await phd2Service.GetCameraInfoAsync();
+            return new ApiResponse
+            {
+                Success = true,
+                Response = info,
+                StatusCode = 200,
+                Type = "PHD2CameraInfo"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
         }
     }
 

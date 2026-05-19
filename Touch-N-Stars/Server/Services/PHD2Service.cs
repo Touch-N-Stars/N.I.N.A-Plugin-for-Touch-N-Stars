@@ -1928,6 +1928,72 @@ namespace TouchNStars.Server.Services
         }
 
         // Auto exposure methods
+        public async Task<object> GetCameraInfoAsync()
+        {
+            return await Task.Run(() =>
+            {
+                lock (lockObject)
+                {
+                    if (client == null || !client.IsConnected)
+                        throw new InvalidOperationException("PHD2 not connected");
+
+                    // Prefer the aggregated RPC added to the local PHD2 build.
+                    // Fall back to individual calls when running against an older PHD2.
+                    try
+                    {
+                        var rpc = client.GetCameraInfoRpc();
+                        if (rpc != null)
+                            return (object)rpc;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug($"get_camera_info RPC unavailable, falling back to individual calls: {ex.Message}");
+                    }
+
+                    // Individual-call fallback
+                    var info = new Dictionary<string, object>();
+
+                    try
+                    {
+                        var equipment = client.GetCurrentEquipment() as Dictionary<string, object>;
+                        if (equipment != null && equipment.TryGetValue("camera", out var camEntry))
+                        {
+                            if (camEntry is Dictionary<string, object> cam)
+                            {
+                                info["name"] = cam.TryGetValue("name", out var n) ? n : null;
+                                info["connected"] = cam.TryGetValue("connected", out var c) ? c : false;
+                            }
+                        }
+                    }
+                    catch { }
+
+                    if (!info.ContainsKey("name")) info["name"] = null;
+                    if (!info.ContainsKey("connected")) info["connected"] = false;
+
+                    try { info["gain_pct"] = client.GetCameraGain(); } catch { info["gain_pct"] = null; }
+                    try { info["bits_per_pixel"] = client.GetCameraBitdepth(); } catch { info["bits_per_pixel"] = null; }
+                    try { info["binning"] = client.GetCameraBinning(); } catch { info["binning"] = null; }
+                    try { info["has_subframes"] = client.GetCameraUseSubframes(); } catch { info["has_subframes"] = null; }
+
+                    try
+                    {
+                        var fs = client.GetCameraFrameSize();
+                        info["frame_width"] = fs?.Width;
+                        info["frame_height"] = fs?.Height;
+                    }
+                    catch { info["frame_width"] = null; info["frame_height"] = null; }
+
+                    try { info["pixel_scale"] = client.GetPixelScale(); } catch { info["pixel_scale"] = null; }
+                    try { info["exposure_ms"] = client.GetExposure(); } catch { info["exposure_ms"] = null; }
+                    try { info["cooler_on"] = client.GetCameraCoolerOn(); } catch { info["cooler_on"] = null; }
+                    try { info["cooler_setpoint"] = client.GetCameraTemperatureSetpoint(); } catch { info["cooler_setpoint"] = null; }
+
+                    return (object)info;
+                }
+            });
+        }
+
+        // Auto exposure methods
         public async Task<double> GetAutoExposureMinAsync()
         {
             await WaitForConnectionIfNeeded();
@@ -2766,6 +2832,94 @@ namespace TouchNStars.Server.Services
                 {
                     lastError = ex.Message;
                     Logger.Error($"Failed to get Dec guide mode: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task<int> GetMaxRaDurationAsync()
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        return client.GetMaxRaDuration();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get max RA duration: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task SetMaxRaDurationAsync(int ms)
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.SetMaxRaDuration(ms);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to set max RA duration: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task<int> GetMaxDecDurationAsync()
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        return client.GetMaxDecDuration();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get max DEC duration: {ex}");
+                    throw;
+                }
+            });
+        }
+
+        public async Task SetMaxDecDurationAsync(int ms)
+        {
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+                        client.SetMaxDecDuration(ms);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to set max DEC duration: {ex}");
                     throw;
                 }
             });

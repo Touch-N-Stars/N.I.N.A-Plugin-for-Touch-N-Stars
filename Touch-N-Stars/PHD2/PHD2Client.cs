@@ -1335,6 +1335,32 @@ namespace TouchNStars.PHD2
             return (string)result["result"];
         }
 
+        public int GetMaxRaDuration()
+        {
+            CheckConnected();
+            var result = Call("get_max_ra_duration");
+            return (int)result["result"];
+        }
+
+        public void SetMaxRaDuration(int ms)
+        {
+            CheckConnected();
+            Call("set_max_ra_duration", new JValue(ms));
+        }
+
+        public int GetMaxDecDuration()
+        {
+            CheckConnected();
+            var result = Call("get_max_dec_duration");
+            return (int)result["result"];
+        }
+
+        public void SetMaxDecDuration(int ms)
+        {
+            CheckConnected();
+            Call("set_max_dec_duration", new JValue(ms));
+        }
+
         public bool GetGuideOutputEnabled()
         {
             CheckConnected();
@@ -1375,7 +1401,10 @@ namespace TouchNStars.PHD2
 
             var param = new JArray { axis, name };
             var result = Call("get_algo_param", param);
-            return (double)result["result"];
+            var token = result["result"];
+            if (token.Type != JTokenType.Float && token.Type != JTokenType.Integer)
+                throw new PHD2Exception($"could not get param '{name}': result is not numeric ({token})");
+            return (double)token;
         }
 
         public string[] GetAlgoParamNames(string axis)
@@ -1783,6 +1812,90 @@ namespace TouchNStars.PHD2
             CheckConnected();
             var param = new JObject { ["binning"] = binning };
             Call("set_camera_binning", param);
+        }
+
+        public int GetCameraBitdepth()
+        {
+            CheckConnected();
+            var result = Call("get_camera_bitdepth");
+            if (result == null || result["result"] == null)
+                return 0;
+            return (int)result["result"];
+        }
+
+        /// <summary>
+        /// Calls the get_camera_info RPC (added to PHD2 locally).
+        /// Returns a Dictionary with keys: name, connected, pixel_size, is_color,
+        /// has_gain_control, gain, has_subframes, has_cooler, max_hw_binning, binning,
+        /// and (when connected) bits_per_pixel, frame_width, frame_height.
+        /// </summary>
+        public Dictionary<string, object> GetCameraInfoRpc()
+        {
+            CheckConnected();
+            var result = Call("get_camera_info");
+            if (result == null || result["result"] == null || result["result"].Type == JTokenType.Null)
+                return null;
+
+            var obj = result["result"] as JObject;
+            if (obj == null)
+                return null;
+
+            var info = new Dictionary<string, object>();
+            foreach (var prop in obj.Properties())
+            {
+                var val = prop.Value;
+                switch (val.Type)
+                {
+                    case JTokenType.Boolean: info[prop.Name] = (bool)val; break;
+                    case JTokenType.Integer: info[prop.Name] = (long)val; break;
+                    case JTokenType.Float:   info[prop.Name] = (double)val; break;
+                    case JTokenType.String:  info[prop.Name] = (string)val; break;
+                    case JTokenType.Null:    info[prop.Name] = null; break;
+                    default:                 info[prop.Name] = val.ToString(); break;
+                }
+            }
+            return info;
+        }
+
+        /// <summary>
+        /// Returns the guide frame size as (Width, Height), or null if the camera is not connected.
+        /// PHD2 serialises wxSize as a two-element JSON array [x, y].
+        /// </summary>
+        public (int Width, int Height)? GetCameraFrameSize()
+        {
+            CheckConnected();
+            try
+            {
+                var result = Call("get_camera_frame_size");
+                if (result == null || result["result"] == null || result["result"].Type == JTokenType.Null)
+                    return null;
+                var ary = result["result"] as JArray;
+                if (ary == null || ary.Count < 2)
+                    return null;
+                return ((int)ary[0], (int)ary[1]);
+            }
+            catch
+            {
+                return null; // camera not connected in PHD2
+            }
+        }
+
+        public string GetSelectedCamera()
+        {
+            CheckConnected();
+            var result = Call("get_selected_camera");
+            if (result == null || result["result"] == null || result["result"].Type == JTokenType.Null)
+                return null;
+            return (string)result["result"];
+        }
+
+        public string GetSelectedCameraId()
+        {
+            CheckConnected();
+            var result = Call("get_selected_camera_id");
+            if (result == null || result["result"] == null || result["result"].Type == JTokenType.Null)
+                return null;
+            return (string)result["result"];
         }
 
         // Auto exposure methods
