@@ -2144,5 +2144,35 @@ namespace TouchNStars.PHD2
             Call("set_saturation_adu_value", param);
         }
 
+        // Noise reduction: 0=None, 1=2x2Mean, 2=3x3Median
+        public int GetNoiseReductionMethod()
+        {
+            CheckConnected();
+            var result = Call("get_noise_reduction_method");
+            return (int)result["result"];
+        }
+
+        public void SetNoiseReductionMethod(int method)
+        {
+            CheckConnected();
+            var param = new JObject { ["method"] = method };
+            Call("set_noise_reduction_method", param);
+        }
+
+        // Time lapse: fixed delay in ms between guide exposures (mutually exclusive with variable delay)
+        public int GetTimeLapse()
+        {
+            CheckConnected();
+            var result = Call("get_time_lapse");
+            return (int)result["result"];
+        }
+
+        public void SetTimeLapse(int ms)
+        {
+            CheckConnected();
+            var param = new JObject { ["ms"] = ms };
+            Call("set_time_lapse", param);
+        }
+
     }
 }

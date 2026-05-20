@@ -1944,7 +1944,10 @@ namespace TouchNStars.Server.Services
                     {
                         var rpc = client.GetCameraInfoRpc();
                         if (rpc != null)
+                        {
+                            AppendExtraFields(rpc);
                             return (object)rpc;
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -1989,9 +1992,71 @@ namespace TouchNStars.Server.Services
                     try { info["cooler_on"] = client.GetCameraCoolerOn(); } catch { info["cooler_on"] = null; }
                     try { info["cooler_setpoint"] = client.GetCameraTemperatureSetpoint(); } catch { info["cooler_setpoint"] = null; }
 
+                    AppendExtraFields(info);
+
                     return (object)info;
                 }
             });
+        }
+
+        /// <summary>
+        /// Appends saturation, time-lapse (variable delay), and noise-reduction
+        /// fields to a camera-info dictionary. All fetches are best-effort.
+        /// </summary>
+        private void AppendExtraFields(Dictionary<string, object> info)
+        {
+            // Saturation: either by fixed ADU threshold or by star-profile analysis
+            try
+            {
+                bool byAdu = client.GetSaturationByADU();
+                info["saturation_by_adu"] = byAdu;
+                if (byAdu)
+                {
+                    int? aduValue = null;
+                    try { aduValue = client.GetSaturationADUValue(); info["saturation_adu_value"] = aduValue; } catch { info["saturation_adu_value"] = null; }
+
+                    // Warn when the ADU threshold does not match the camera's expected max ADU
+                    // for its bit depth (e.g. 255 on a 16-bit camera whose max is 65535).
+                    bool warning = false;
+                    if (aduValue.HasValue
+                        && info.TryGetValue("bits_per_pixel", out var bppObj)
+                        && bppObj != null)
+                    {
+                        try
+                        {
+                            int bpp = Convert.ToInt32(bppObj);
+                            int maxAdu = (1 << bpp) - 1;
+                            warning = aduValue.Value != maxAdu;
+                        }
+                        catch { }
+                    }
+                    info["saturation_adu_warning"] = warning;
+                }
+            }
+            catch { info["saturation_by_adu"] = null; }
+
+            // Time lapse: fixed ms delay between exposures (disabled when variable delay is active)
+            try { info["time_lapse_ms"] = client.GetTimeLapse(); } catch { info["time_lapse_ms"] = null; }
+
+            // Variable delay: state-dependent short/long delay (mutually exclusive with time lapse)
+            try
+            {
+                var vd = client.GetVariableDelaySettings();
+                if (vd != null)
+                {
+                    bool enabled = vd["Enabled"]?.ToObject<bool>() ?? false;
+                    info["variable_delay_enabled"] = enabled;
+                    if (enabled)
+                    {
+                        info["variable_delay_short_sec"] = vd["ShortDelaySeconds"]?.ToObject<int>();
+                        info["variable_delay_long_sec"] = vd["LongDelaySeconds"]?.ToObject<int>();
+                    }
+                }
+            }
+            catch { info["variable_delay_enabled"] = null; }
+
+            // Noise reduction: 0=None, 1=2x2Mean, 2=3x3Median
+            try { info["noise_reduction_method"] = client.GetNoiseReductionMethod(); } catch { info["noise_reduction_method"] = null; }
         }
 
         // Auto exposure methods
