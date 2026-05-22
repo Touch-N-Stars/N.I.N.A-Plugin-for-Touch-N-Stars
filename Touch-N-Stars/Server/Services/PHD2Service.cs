@@ -752,6 +752,60 @@ namespace TouchNStars.Server.Services
             });
         }
 
+        public async Task<int> GetCalibrationDistanceAsync()
+        {
+            await WaitForConnectionIfNeeded();
+
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                        {
+                            throw new InvalidOperationException("PHD2 not connected");
+                        }
+
+                        return client.GetCalibrationDistance();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get calibration distance: {ex}");
+                    return 0;
+                }
+            });
+        }
+
+        public async Task SetCalibrationDistanceAsync(int distance)
+        {
+            await WaitForConnectionIfNeeded();
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                        {
+                            throw new InvalidOperationException("PHD2 not connected");
+                        }
+
+                        client.SetCalibrationDistance(distance);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to set calibration distance: {ex}");
+                    throw;
+                }
+            });
+        }
+
         public async Task ClearMountCalibrationAsync()
         {
             await WaitForConnectionIfNeeded();
@@ -2057,6 +2111,11 @@ namespace TouchNStars.Server.Services
 
             // Noise reduction: 0=None, 1=2x2Mean, 2=3x3Median
             try { info["noise_reduction_method"] = client.GetNoiseReductionMethod(); } catch { info["noise_reduction_method"] = null; }
+
+            // Pixel scale (arcsec/px) — only present in fast-path (get_camera_info RPC) when appended here;
+            // the fallback path adds it directly before calling AppendExtraFields.
+            if (!info.ContainsKey("pixel_scale"))
+                try { info["pixel_scale"] = client.GetPixelScale(); } catch { info["pixel_scale"] = null; }
         }
 
         // Auto exposure methods

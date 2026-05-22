@@ -1484,9 +1484,9 @@ public class PHD2Controller : WebApiController
                 Success = true,
                 Response = new
                 {
-                    Exists         = info.Value<bool>("exists"),
-                    Loaded         = info.Value<bool>("loaded"),
-                    NumDarks       = info.Value<int>("numDarks"),
+                    Exists = info.Value<bool>("exists"),
+                    Loaded = info.Value<bool>("loaded"),
+                    NumDarks = info.Value<int>("numDarks"),
                     MinExposureSec = info.Value<double>("minExposureSec"),
                     MaxExposureSec = info.Value<double>("maxExposureSec"),
                 },
@@ -3063,6 +3063,97 @@ public class PHD2Controller : WebApiController
                 Response = new { CalibrationStep = step },
                 StatusCode = 200,
                 Type = "PHD2CalibrationStep"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    /// <summary>
+    /// GET /api/phd2/calibration/distance - Get calibration distance
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/calibration/distance")]
+    public async Task<ApiResponse> GetCalibrationDistance()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var distance = await phd2Service.GetCalibrationDistanceAsync();
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { CalibrationDistance = distance },
+                StatusCode = 200,
+                Type = "PHD2CalibrationDistance"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    /// <summary>
+    /// PUT /api/phd2/calibration/distance - Set calibration distance
+    /// </summary>
+    [Route(HttpVerbs.Put, "/phd2/calibration/distance")]
+    public async Task<ApiResponse> SetCalibrationDistance()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null || !requestData.ContainsKey("calibrationDistance") || requestData["calibrationDistance"] == null)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "calibrationDistance parameter is required",
+                    StatusCode = 400,
+                    Type = "Error"
+                };
+            }
+
+            if (!int.TryParse(requestData["calibrationDistance"].ToString(), out int distance))
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "calibrationDistance must be a valid integer",
+                    StatusCode = 400,
+                    Type = "Error"
+                };
+            }
+
+            await phd2Service.SetCalibrationDistanceAsync(distance);
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { CalibrationDistance = distance },
+                StatusCode = 200,
+                Type = "PHD2CalibrationDistance"
             };
         }
         catch (Exception ex)

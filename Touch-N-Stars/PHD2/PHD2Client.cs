@@ -913,6 +913,26 @@ namespace TouchNStars.PHD2
             Call("set_calibration_step", step);
         }
 
+        public int GetCalibrationDistance()
+        {
+            CheckConnected();
+            var result = Call("get_calibration_distance");
+            var distance = result["result"];
+
+            if (distance == null || distance.Type == JTokenType.Null)
+            {
+                throw new PHD2Exception("Calibration distance not available");
+            }
+
+            return (int)distance;
+        }
+
+        public void SetCalibrationDistance(int distance)
+        {
+            CheckConnected();
+            Call("set_calibration_distance", distance);
+        }
+
         public void ClearMountCalibration()
         {
             CheckConnected();
