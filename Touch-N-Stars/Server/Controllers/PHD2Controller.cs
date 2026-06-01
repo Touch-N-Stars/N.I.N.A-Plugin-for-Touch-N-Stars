@@ -2656,12 +2656,13 @@ public class PHD2Controller : WebApiController
     /// GET /api/phd2/current-image - Get current PHD2 image
     /// </summary>
     [Route(HttpVerbs.Get, "/phd2/current-image")]
-    public async Task GetPHD2CurrentImage()
+    public async Task GetPHD2CurrentImage([QueryField] double gamma)
     {
         try
         {
             EnsurePHD2ServicesInitialized();
-            var imageBytes = await phd2ImageService.GetCurrentImageBytesAsync();
+            double effectiveGamma = gamma > 0 ? gamma : 0.5;
+            var imageBytes = await phd2ImageService.GetCurrentImageBytesAsync(effectiveGamma);
 
             if (imageBytes == null)
             {

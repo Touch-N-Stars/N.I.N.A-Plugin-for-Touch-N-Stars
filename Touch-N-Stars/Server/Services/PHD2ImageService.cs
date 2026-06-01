@@ -41,7 +41,7 @@ namespace TouchNStars.Server.Services
             Directory.CreateDirectory(cacheDirectory);
         }
 
-        public async Task<bool> RefreshImageAsync()
+        public async Task<bool> RefreshImageAsync(double gamma = 0.5)
         {
             if (isDisposed) return false;
             
@@ -86,7 +86,7 @@ namespace TouchNStars.Server.Services
                 }
 
                 // Convert FITS to JPG and cache it
-                string jpgPath = await ConvertFitsToJpgAsync(fitsFilePath);
+                string jpgPath = await ConvertFitsToJpgAsync(fitsFilePath, gamma);
                 
                 if (!string.IsNullOrEmpty(jpgPath))
                 {
@@ -141,7 +141,7 @@ namespace TouchNStars.Server.Services
             }
         }
 
-        private async Task<string> ConvertFitsToJpgAsync(string fitsFilePath)
+        private async Task<string> ConvertFitsToJpgAsync(string fitsFilePath, double gamma = 0.5)
         {
             try
             {
@@ -157,14 +157,15 @@ namespace TouchNStars.Server.Services
                         // Use NINA's ImageDataFactory to load the FITS file
                         var imageDataFactory = TouchNStars.Mediators.ImageDataFactory;
                         IImageData imageData = await imageDataFactory.CreateFromFile(fitsFilePath, 16, false, RawConverterEnum.FREEIMAGE);
-                        
+
                         if (imageData != null)
                         {
                             // Render the image
                             IRenderedImage renderedImage = imageData.RenderImage();
-                            
-                            // Apply basic stretching for better visibility
-                            renderedImage = await renderedImage.Stretch(2.5, 0.1, false);
+
+                            // Map gamma (0.1–1.0) to stretch factor: gamma 0.1 → factor 5.0, gamma 1.0 → factor 1.0
+                            double stretchFactor = 1.0 + (1.0 - gamma) * 4.0;
+                            renderedImage = await renderedImage.Stretch(stretchFactor, 0.1, false);
 
                             // Convert to bitmap and save as JPG
                             BitmapSource bitmapSource = renderedImage.Image;
@@ -190,7 +191,7 @@ namespace TouchNStars.Server.Services
                 }
 
                 // Fallback: Try to read and convert FITS file manually
-                return await ConvertFitsManuallyAsync(fitsFilePath, jpgPath);
+                return await ConvertFitsManuallyAsync(fitsFilePath, jpgPath, gamma);
             }
             catch (Exception ex)
             {
@@ -200,7 +201,7 @@ namespace TouchNStars.Server.Services
             }
         }
 
-        private async Task<string> ConvertFitsManuallyAsync(string fitsFilePath, string jpgPath)
+        private async Task<string> ConvertFitsManuallyAsync(string fitsFilePath, string jpgPath, double gamma = 0.5)
         {
             try
             {
@@ -211,7 +212,7 @@ namespace TouchNStars.Server.Services
                     return await CreatePlaceholderImageAsync(jpgPath);
                 }
 
-                var result = await ConvertFitsDataToJpgAsync(fitsData, jpgPath);
+                var result = await ConvertFitsDataToJpgAsync(fitsData, jpgPath, gamma);
                 
                 if (string.IsNullOrEmpty(result))
                 {
@@ -445,7 +446,7 @@ namespace TouchNStars.Server.Services
             }
         }
 
-        private async Task<string> ConvertFitsDataToJpgAsync(SimpleFitsData fitsData, string jpgPath)
+        private async Task<string> ConvertFitsDataToJpgAsync(SimpleFitsData fitsData, string jpgPath, double gamma = 0.5)
         {
             return await Task.Run(() =>
             {
@@ -501,9 +502,9 @@ namespace TouchNStars.Server.Services
 
                                         // Apply simple linear stretch
                                         float normalized = (value - minVal) / (maxVal - minVal);
-                                        
-                                        // Apply gamma correction for better visibility
-                                        normalized = (float)Math.Pow(normalized, 0.5);
+
+                                        // Apply gamma correction for visibility
+                                        normalized = (float)Math.Pow(normalized, gamma);
                                         
                                         byte intensity = (byte)Math.Round(255.0f * Math.Max(0, Math.Min(1, normalized)));
 
@@ -607,10 +608,10 @@ namespace TouchNStars.Server.Services
         }
 
 
-        public async Task<byte[]> GetCurrentImageBytesAsync()
+        public async Task<byte[]> GetCurrentImageBytesAsync(double gamma = 0.5)
         {
             // Always fetch a fresh image on demand
-            await RefreshImageAsync();
+            await RefreshImageAsync(gamma);
             
             string imagePath;
             lock (lockObject)

@@ -331,6 +331,44 @@ public class FilesystemController : WebApiController
     }
 
     // -------------------------------------------------------------------------
+    // GET /api/filesystem/file?path=...  — read file content as text
+    // -------------------------------------------------------------------------
+    [Route(HttpVerbs.Get, "/filesystem/file")]
+    public async Task ReadFile()
+    {
+        try
+        {
+            string pathParam = HttpContext.Request.QueryString["path"];
+            if (string.IsNullOrWhiteSpace(pathParam))
+            {
+                await SendJson(new { success = false, error = "Missing 'path' query parameter" }, 400);
+                return;
+            }
+
+            string fullPath = Path.GetFullPath(Uri.UnescapeDataString(pathParam));
+
+            if (!File.Exists(fullPath))
+            {
+                await SendJson(new { success = false, error = "File does not exist" }, 404);
+                return;
+            }
+
+            string content = await File.ReadAllTextAsync(fullPath, Encoding.UTF8);
+            HttpContext.Response.StatusCode = 200;
+            await HttpContext.SendStringAsync(content, "text/plain", Encoding.UTF8);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await SendJson(new { success = false, error = "Access denied" }, 403);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[FilesystemController.ReadFile] {ex.Message}", ex);
+            await SendJson(new { success = false, error = ex.Message }, 500);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // DELETE /api/filesystem/file?path=...
     // -------------------------------------------------------------------------
     [Route(HttpVerbs.Delete, "/filesystem/file")]

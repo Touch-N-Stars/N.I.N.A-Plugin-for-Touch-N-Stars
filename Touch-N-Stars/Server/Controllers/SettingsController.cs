@@ -6,6 +6,7 @@ using NINA.Core.Utility;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace TouchNStars.Server.Controllers;
@@ -47,7 +48,7 @@ public class SettingsController : WebApiController
             if (File.Exists(SettingsFilePath))
             {
                 var json = await File.ReadAllTextAsync(SettingsFilePath);
-                currentSettings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+                currentSettings = JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions { AllowTrailingCommas = true }) ?? new();
             }
 
             currentSettings[setting.Key] = setting.Value;
@@ -93,7 +94,7 @@ public class SettingsController : WebApiController
         if (!File.Exists(SettingsFilePath)) return new Dictionary<string, string>();
 
         var json = await File.ReadAllTextAsync(SettingsFilePath);
-        return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new Dictionary<string, string>();
+        return JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions { AllowTrailingCommas = true }) ?? new Dictionary<string, string>();
     }
 
     /// <summary>
@@ -128,7 +129,7 @@ public class SettingsController : WebApiController
             }
 
             var json = await File.ReadAllTextAsync(SettingsFilePath);
-            var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+            var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions { AllowTrailingCommas = true }) ?? new();
 
             if (!settings.ContainsKey(key))
             {
@@ -195,7 +196,7 @@ public class SettingsController : WebApiController
             }
 
             var json = await File.ReadAllTextAsync(SettingsFilePath);
-            var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+            var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions { AllowTrailingCommas = true }) ?? new();
 
             if (!settings.ContainsKey(key))
             {
@@ -275,7 +276,7 @@ public class SettingsController : WebApiController
             }
 
             var json = await File.ReadAllTextAsync(SettingsFilePath);
-            var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+            var settings = JsonSerializer.Deserialize<Dictionary<string, string>>(json, new JsonSerializerOptions { AllowTrailingCommas = true }) ?? new();
 
             if (!settings.ContainsKey(key))
             {
