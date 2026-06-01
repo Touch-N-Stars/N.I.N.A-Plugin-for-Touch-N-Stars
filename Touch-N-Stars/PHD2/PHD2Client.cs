@@ -22,6 +22,7 @@ using System.Net.Sockets;
 using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using NINA.Core.Utility.Notification;
 
 namespace TouchNStars.PHD2
 {
@@ -566,6 +567,15 @@ namespace TouchNStars.PHD2
                         ExposureMs = DarkBuild.ExposureMs,
                         Error = (string)eventObj["Error"]
                     };
+                    break;
+
+                case "Alert":
+                    var alertMsg = (string)eventObj["Msg"];
+                    var alertType = (string)eventObj["Type"];
+                    if (alertType == "error")
+                        Notification.ShowError(alertMsg);
+                    else
+                        Notification.ShowWarning(alertMsg);
                     break;
             }
         }

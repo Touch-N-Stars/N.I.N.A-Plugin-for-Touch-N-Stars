@@ -1018,6 +1018,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetFocalLengthAsync(focalLength);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2FocalLength = focalLength;
 
             return new ApiResponse
             {
@@ -1231,6 +1232,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetExposureAsync(exposureMs);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2ExposureMs = exposureMs;
 
             return new ApiResponse
             {
@@ -1311,6 +1313,7 @@ public class PHD2Controller : WebApiController
 
             string mode = requestData["mode"].ToString();
             await phd2Service.SetDecGuideModeAsync(mode);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2DecGuideMode = mode;
 
             return new ApiResponse
             {
@@ -1408,6 +1411,7 @@ public class PHD2Controller : WebApiController
                 return new ApiResponse { Success = false, Error = "ms must be an integer", StatusCode = 400, Type = "Error" };
             }
             await phd2Service.SetMaxRaDurationAsync(ms);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MaxRADuration = ms;
             return new ApiResponse { Success = true, Response = new { MaxRaDurationSet = ms }, StatusCode = 200, Type = "PHD2Parameter" };
         }
         catch (Exception ex)
@@ -1459,6 +1463,7 @@ public class PHD2Controller : WebApiController
                 return new ApiResponse { Success = false, Error = "ms must be an integer", StatusCode = 400, Type = "Error" };
             }
             await phd2Service.SetMaxDecDurationAsync(ms);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MaxDecDuration = ms;
             return new ApiResponse { Success = true, Response = new { MaxDecDurationSet = ms }, StatusCode = 200, Type = "PHD2Parameter" };
         }
         catch (Exception ex)
@@ -2252,6 +2257,27 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetAlgoParamAsync(axis, name, value);
+            var _gs = TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings;
+            if (axis == "ra" && name == "minMove") _gs.PHD2RAMinMove = value;
+            else if (axis == "dec" && name == "minMove") _gs.PHD2DecMinMove = value;
+            else if (axis == "ra" && name == "aggression") _gs.PHD2RAAggressiveness = value;
+            else if (axis == "dec" && name == "aggression") _gs.PHD2DecAggressiveness = value;
+            else if (axis == "ra" && name == "hysteresis") _gs.PHD2RAHysteresis = value;
+            else if (axis == "dec" && name == "hysteresis") _gs.PHD2DecHysteresis = value;
+            else if (axis == "dec" && name == "fastSwitch") _gs.PHD2DecFastSwitch = value != 0.0;
+            else if (axis == "ra" && name == "fastSwitch") _gs.PHD2RAFastSwitch = value != 0.0;
+            else if (axis == "ra" && name == "slopeWeight") _gs.PHD2RASlopeWeight = value;
+            else if (axis == "dec" && name == "slopeWeight") _gs.PHD2DecSlopeWeight = value;
+            else if (axis == "ra" && name == "aggressiveness") _gs.PHD2RALowpass2Aggressiveness = value;
+            else if (axis == "dec" && name == "aggressiveness") _gs.PHD2DecLowpass2Aggressiveness = value;
+            else if (axis == "ra" && name == "predictiveWeight") _gs.PHD2RAPredictiveWeight = value;
+            else if (axis == "dec" && name == "predictiveWeight") _gs.PHD2DecPredictiveWeight = value;
+            else if (axis == "ra" && name == "reactiveWeight") _gs.PHD2RAReactiveWeight = value;
+            else if (axis == "dec" && name == "reactiveWeight") _gs.PHD2DecReactiveWeight = value;
+            else if (axis == "ra" && name == "periodLength") { _gs.PHD2RAPeriodLength = value; _gs.PHD2RAGPAutoAdjustPeriod = false; }
+            else if (axis == "dec" && name == "periodLength") { _gs.PHD2DecPeriodLength = value; _gs.PHD2DecGPAutoAdjustPeriod = false; }
+            else if (axis == "ra" && name == "expFactor") _gs.PHD2RAExpFactor = value;
+            else if (axis == "dec" && name == "expFactor") _gs.PHD2DecExpFactor = value;
 
             return new ApiResponse
             {
@@ -2414,6 +2440,9 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetVariableDelaySettingsAsync(enabled, shortDelaySeconds, longDelaySeconds);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2VarDelayEnabled = enabled;
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2VarDelayShortSec = shortDelaySeconds;
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2VarDelayLongSec = longDelaySeconds;
 
             return new ApiResponse
             {
@@ -2478,6 +2507,98 @@ public class PHD2Controller : WebApiController
                 Error = ex.Message,
                 StatusCode = 400,
                 Type = "PHD2MethodNotFound"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    /// <summary>
+    /// GET /api/phd2/time-lapse - Get time lapse delay in ms
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/time-lapse")]
+    public async Task<ApiResponse> GetTimeLapse()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            int ms = await phd2Service.GetTimeLapseAsync();
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { TimeLapseMs = ms },
+                StatusCode = 200,
+                Type = "PHD2TimeLapse"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    /// <summary>
+    /// PUT /api/phd2/time-lapse - Set time lapse delay in ms
+    /// </summary>
+    [Route(HttpVerbs.Put, "/phd2/time-lapse")]
+    public async Task<ApiResponse> SetTimeLapse()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null || !requestData.ContainsKey("ms"))
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "ms parameter is required",
+                    StatusCode = 400,
+                    Type = "Error"
+                };
+            }
+
+            if (!int.TryParse(requestData["ms"].ToString(), out int ms) || ms < 0)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "ms must be a non-negative integer",
+                    StatusCode = 400,
+                    Type = "Error"
+                };
+            }
+
+            await phd2Service.SetTimeLapseAsync(ms);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2TimeLapseMs = ms;
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { TimeLapseMs = ms },
+                StatusCode = 200,
+                Type = "PHD2TimeLapse"
             };
         }
         catch (Exception ex)
@@ -3057,6 +3178,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetCalibrationStepAsync(step);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2CalibrationStepMs = step;
 
             return new ApiResponse
             {
@@ -3148,6 +3270,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetCalibrationDistanceAsync(distance);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2CalibrationDistancePx = distance;
 
             return new ApiResponse
             {
@@ -3273,6 +3396,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetAutoRestoreCalibrationsAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2AutoRestoreCalibration = enabled;
 
             return new ApiResponse
             {
@@ -3365,6 +3489,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetAssumeDecOrthogonalAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2AssumeDecOrthogonal = enabled;
 
             return new ApiResponse
             {
@@ -3457,6 +3582,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetUseDecCompensationAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2UseDecCompensation = enabled;
 
             return new ApiResponse
             {
@@ -3549,6 +3675,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetSearchRegionAsync(pixels);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2SearchRegion = pixels;
 
             return new ApiResponse
             {
@@ -3641,6 +3768,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetMinStarHFRAsync(hfr);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MinStarHFD = hfr;
 
             return new ApiResponse
             {
@@ -3733,6 +3861,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetMaxStarHFRAsync(hfr);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MaxStarHFD = hfr;
 
             return new ApiResponse
             {
@@ -3825,6 +3954,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetBeepForLostStarAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2BeepForLostStar = enabled;
 
             return new ApiResponse
             {
@@ -3917,6 +4047,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetMassChangeThresholdEnabledAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MassChangeThresholdEnabled = enabled;
 
             return new ApiResponse
             {
@@ -4008,6 +4139,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetMassChangeThresholdAsync(threshold / 100d);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2MassChangeThreshold = threshold / 100d;
 
             return new ApiResponse
             {
@@ -4100,6 +4232,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetAFMinStarSNRAsync(snr);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2AfMinStarSnr = snr;
 
             return new ApiResponse
             {
@@ -4192,6 +4325,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetUseMultipleStarsAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2UseMultipleStars = enabled;
 
             return new ApiResponse
             {
@@ -4285,6 +4419,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetAutoSelectDownsampleAsync(value);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2AutoSelectDownsample = value;
 
             return new ApiResponse
             {
@@ -4469,6 +4604,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetReverseDecAfterFlipAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2ReverseDecOnFlip = enabled;
 
             return new ApiResponse
             {
@@ -4561,6 +4697,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetFastRecenterEnabledAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2FastRecenter = enabled;
 
             return new ApiResponse
             {
@@ -4746,6 +4883,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetGuideAlgorithmRAAsync(algorithm);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2GuideAlgorithmRA = algorithm;
             return new ApiResponse
             {
                 Success = true,
@@ -4836,6 +4974,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetGuideAlgorithmDECAsync(algorithm);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2GuideAlgorithmDec = algorithm;
             return new ApiResponse
             {
                 Success = true,
@@ -4940,6 +5079,9 @@ public class PHD2Controller : WebApiController
                 aduValue = adu;
             }
             await phd2Service.SetSaturationByADUAsync(byADU, aduValue);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2SaturationByADU = byADU;
+            if (aduValue.HasValue)
+                TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2SaturationADUValue = aduValue.Value;
             return new ApiResponse
             {
                 Success = true,
@@ -5027,6 +5169,8 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetSaturationADUValueAsync(aduValue);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2SaturationByADU = true;
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2SaturationADUValue = aduValue;
             return new ApiResponse
             {
                 Success = true,
@@ -5115,6 +5259,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetDitherModeAsync(mode);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2DitherMode = mode;
             return new ApiResponse
             {
                 Success = true,
@@ -5202,6 +5347,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetDitherRaOnlyAsync(raOnly);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2DitherRAOnly = raOnly;
             return new ApiResponse
             {
                 Success = true,
@@ -5289,6 +5435,7 @@ public class PHD2Controller : WebApiController
                 };
             }
             await phd2Service.SetDitherScaleAsync(scale);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2DitherScale = scale;
             return new ApiResponse
             {
                 Success = true,
@@ -5639,6 +5786,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetCameraGainAsync(gain);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2CameraGain = gain;
 
             return new ApiResponse
             {
@@ -5912,6 +6060,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetCameraUseSubframesAsync(enabled);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2UseSubframes = enabled;
 
             return new ApiResponse
             {
@@ -6003,6 +6152,7 @@ public class PHD2Controller : WebApiController
             }
 
             await phd2Service.SetCameraBinningAsync(binning);
+            TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2CameraBinning = binning;
 
             return new ApiResponse
             {

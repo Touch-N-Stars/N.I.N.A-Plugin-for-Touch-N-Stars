@@ -1382,6 +1382,60 @@ namespace TouchNStars.Server.Services
         }
 
         // Multi-star mode method
+        public async Task<int> GetTimeLapseAsync()
+        {
+            await WaitForConnectionIfNeeded();
+
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                        {
+                            throw new InvalidOperationException("PHD2 not connected");
+                        }
+
+                        return client.GetTimeLapse();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get time lapse: {ex}");
+                    return 0;
+                }
+            });
+        }
+
+        public async Task SetTimeLapseAsync(int ms)
+        {
+            await WaitForConnectionIfNeeded();
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                        {
+                            throw new InvalidOperationException("PHD2 not connected");
+                        }
+
+                        client.SetTimeLapse(ms);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to set time lapse: {ex}");
+                    throw;
+                }
+            });
+        }
+
         public async Task<bool> GetUseMultipleStarsAsync()
         {
             await WaitForConnectionIfNeeded();
