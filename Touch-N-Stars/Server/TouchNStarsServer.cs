@@ -70,6 +70,7 @@ namespace TouchNStars.Server {
                 .WithController<ProxyController>()       // Generic proxy for external URLs
                 .WithController<FilesystemController>()
                 .WithController<FitsAnalysisController>()
+                .WithController<StellariumLandscapeController>()
                 .WithController<NightSummaryController>()
                 .WithController<GroundStationController>());
             WebServer = WebServer.WithStaticFolder("/", webAppDir, false); // Register the static folder, which will be used to serve the web app

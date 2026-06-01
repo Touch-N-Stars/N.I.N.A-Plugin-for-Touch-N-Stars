@@ -1,5 +1,6 @@
 ﻿using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 // [MANDATORY] The following GUID is used as a unique identifier of the plugin. Generate a fresh one for your plugin!
 [assembly: Guid("5af0afae-cab5-4fde-9fcd-3302c0d59686")]
@@ -98,3 +99,4 @@ Thanks to https://github.com/CanardConfit/BahtiFocus for the Bahtinov mask analy
 [assembly: AssemblyTrademark("")]
 // [Unused]
 [assembly: AssemblyCulture("")]
+[assembly: InternalsVisibleTo("TouchNStars.Tests")]
