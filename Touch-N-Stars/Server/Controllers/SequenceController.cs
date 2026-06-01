@@ -3207,8 +3207,14 @@ namespace TouchNStars.Server.Controllers
                     {
                         Application.Current.Dispatcher.Invoke(() =>
                         {
-                            // Reset this item and all subsequent items
-                            ResetItemAndSubsequent(item, mainContainer);
+                            // Match WPF ResetProgressCommand behavior: reset only this item (and its
+                            // children if it is a container), then cascade the status change upward
+                            // to parent containers.  Do NOT reset subsequent siblings.
+                            if (item is ISequenceContainer container)
+                            {
+                                container.ResetAll();
+                            }
+                            item.ResetProgressCascaded();
                         });
                     }
 
@@ -4157,66 +4163,6 @@ namespace TouchNStars.Server.Controllers
             }
 
             return false;
-        }
-
-        /// <summary>
-        /// Helper method to recursively reset an item and all subsequent items in the sequence
-        /// </summary>
-        private void ResetItemAndSubsequent(ISequenceItem item, ISequenceRootContainer rootContainer)
-        {
-            // Use the proper ResetAll() method if available (containers) or ResetProgress() for items
-            // This ensures all internal state is properly reset, including loop conditions' CompletedIterations
-            if (item is ISequenceContainer container)
-            {
-                container.ResetAll();
-            }
-            else
-            {
-                item.ResetProgress();
-            }
-
-            // Cascade the reset up to parent containers (matches WPF behavior)
-            item.ResetProgressCascaded();
-
-            // Find the parent container and reset all items after this one
-            ISequenceContainer parentContainer = null;
-            FindItemContainer(rootContainer, item, ref parentContainer);
-
-            if (parentContainer != null)
-            {
-                var itemIndex = parentContainer.Items.IndexOf(item);
-                if (itemIndex >= 0)
-                {
-                    // Reset all subsequent items
-                    for (int i = itemIndex + 1; i < parentContainer.Items.Count; i++)
-                    {
-                        var subsequentItem = parentContainer.Items[i];
-                        ResetItemAndSubsequent(subsequentItem, rootContainer);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Helper to find the container that directly holds an item
-        /// </summary>
-        private void FindItemContainer(ISequenceContainer container, ISequenceItem targetItem, ref ISequenceContainer parentContainer)
-        {
-            if (parentContainer != null) return; // Already found
-
-            foreach (var item in container.Items)
-            {
-                if (item == targetItem)
-                {
-                    parentContainer = container;
-                    return;
-                }
-
-                if (item is ISequenceContainer childContainer)
-                {
-                    FindItemContainer(childContainer, targetItem, ref parentContainer);
-                }
-            }
         }
 
         /// <summary>
