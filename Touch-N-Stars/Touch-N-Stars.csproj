@@ -55,8 +55,10 @@
     <Exec Command="cp $(TargetDir)Common.Logging.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
     <Exec Command="cp $(TargetDir)Common.Logging.Core.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
     <Exec Command="cp $(TargetDir)EmbedIO.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
+    <Exec Command="cp $(TargetDir)HttpMultipartParser.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
     <Exec Command="cp $(TargetDir)Makaretu.Dns.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
     <Exec Command="cp $(TargetDir)Makaretu.Dns.Multicast.New.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
+    <Exec Command="cp $(TargetDir)SixLabors.ImageSharp.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
     <Exec Command="cp $(TargetDir)Swan.Lite.dll $HOME/.local/share/NINA/Plugins/3.0.0/Touch\ N\ Stars/" />
   </Target>
 </Project>
