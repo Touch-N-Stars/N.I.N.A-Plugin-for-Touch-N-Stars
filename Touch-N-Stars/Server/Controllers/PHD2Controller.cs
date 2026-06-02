@@ -6175,4 +6175,137 @@ public class PHD2Controller : WebApiController
             };
         }
     }
+
+    /// <summary>
+    /// GET /api/phd2/backlash/comp - Get backlash compensation settings
+    /// </summary>
+    [Route(HttpVerbs.Get, "/phd2/backlash/comp")]
+    public async Task<ApiResponse> GetBacklashComp()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var (enabled, pulseWidth, floor, ceiling) = await phd2Service.GetBacklashCompAsync();
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { Enabled = enabled, PulseWidth = pulseWidth, Floor = floor, Ceiling = ceiling },
+                StatusCode = 200,
+                Type = "PHD2BacklashComp"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
+
+    /// <summary>
+    /// PUT /api/phd2/backlash/comp - Set backlash compensation settings
+    /// </summary>
+    [Route(HttpVerbs.Put, "/phd2/backlash/comp")]
+    public async Task<ApiResponse> SetBacklashComp()
+    {
+        try
+        {
+            EnsurePHD2ServicesInitialized();
+            var requestData = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            if (requestData == null)
+            {
+                HttpContext.Response.StatusCode = 400;
+                return new ApiResponse
+                {
+                    Success = false,
+                    Error = "Request body is required",
+                    StatusCode = 400,
+                    Type = "Error"
+                };
+            }
+
+            bool? enabled = null;
+            int? pulseWidth = null;
+            int? floor = null;
+            int? ceiling = null;
+
+            if (requestData.ContainsKey("enabled") && requestData["enabled"] != null)
+            {
+                if (!bool.TryParse(requestData["enabled"].ToString(), out bool e))
+                {
+                    HttpContext.Response.StatusCode = 400;
+                    return new ApiResponse { Success = false, Error = "enabled must be a valid boolean", StatusCode = 400, Type = "Error" };
+                }
+                enabled = e;
+            }
+
+            if (requestData.ContainsKey("pulseWidth") && requestData["pulseWidth"] != null)
+            {
+                if (!int.TryParse(requestData["pulseWidth"].ToString(), out int pw))
+                {
+                    HttpContext.Response.StatusCode = 400;
+                    return new ApiResponse { Success = false, Error = "pulseWidth must be a valid integer", StatusCode = 400, Type = "Error" };
+                }
+                pulseWidth = pw;
+            }
+
+            if (requestData.ContainsKey("floor") && requestData["floor"] != null)
+            {
+                if (!int.TryParse(requestData["floor"].ToString(), out int f))
+                {
+                    HttpContext.Response.StatusCode = 400;
+                    return new ApiResponse { Success = false, Error = "floor must be a valid integer", StatusCode = 400, Type = "Error" };
+                }
+                floor = f;
+            }
+
+            if (requestData.ContainsKey("ceiling") && requestData["ceiling"] != null)
+            {
+                if (!int.TryParse(requestData["ceiling"].ToString(), out int c))
+                {
+                    HttpContext.Response.StatusCode = 400;
+                    return new ApiResponse { Success = false, Error = "ceiling must be a valid integer", StatusCode = 400, Type = "Error" };
+                }
+                ceiling = c;
+            }
+
+            await phd2Service.SetBacklashCompAsync(enabled, pulseWidth, floor, ceiling);
+
+            if (enabled.HasValue)
+                TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2BacklashCompEnabled = enabled.Value;
+            if (pulseWidth.HasValue)
+                TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2BacklashPulseWidth = pulseWidth.Value;
+            if (floor.HasValue)
+                TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2BacklashFloor = floor.Value;
+            if (ceiling.HasValue)
+                TouchNStars.Mediators.Profile.ActiveProfile.GuiderSettings.PHD2BacklashCeiling = ceiling.Value;
+
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { Enabled = enabled, PulseWidth = pulseWidth, Floor = floor, Ceiling = ceiling },
+                StatusCode = 200,
+                Type = "PHD2BacklashComp"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new ApiResponse
+            {
+                Success = false,
+                Error = ex.Message,
+                StatusCode = 500,
+                Type = "Error"
+            };
+        }
+    }
 }

@@ -3709,6 +3709,57 @@ namespace TouchNStars.Server.Services
 
         private bool disposed = false;
 
+        // Backlash compensation
+        public async Task<(bool Enabled, int PulseWidth, int Floor, int Ceiling)> GetBacklashCompAsync()
+        {
+            await WaitForConnectionIfNeeded();
+
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+
+                        return client.GetBacklashComp();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to get backlash comp: {ex}");
+                    return (false, 0, 0, 0);
+                }
+            });
+        }
+
+        public async Task SetBacklashCompAsync(bool? enabled, int? pulseWidth, int? floor, int? ceiling)
+        {
+            await WaitForConnectionIfNeeded();
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (client == null || !client.IsConnected)
+                            throw new InvalidOperationException("PHD2 not connected");
+
+                        client.SetBacklashComp(enabled, pulseWidth, floor, ceiling);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    Logger.Error($"Failed to set backlash comp: {ex}");
+                    throw;
+                }
+            });
+        }
+
         public void Dispose()
         {
             Dispose(true);

@@ -2204,5 +2204,29 @@ namespace TouchNStars.PHD2
             Call("set_time_lapse", param);
         }
 
+        // Backlash compensation
+        public (bool Enabled, int PulseWidth, int Floor, int Ceiling) GetBacklashComp()
+        {
+            CheckConnected();
+            var result = Call("get_backlash_comp");
+            var r = result["result"];
+            bool enabled = r["enabled"] != null && (bool)r["enabled"];
+            int pulseWidth = r["pulseWidth"] != null ? (int)r["pulseWidth"] : 0;
+            int floor = r["floor"] != null ? (int)r["floor"] : 0;
+            int ceiling = r["ceiling"] != null ? (int)r["ceiling"] : 0;
+            return (enabled, pulseWidth, floor, ceiling);
+        }
+
+        public void SetBacklashComp(bool? enabled, int? pulseWidth, int? floor, int? ceiling)
+        {
+            CheckConnected();
+            var param = new JObject();
+            if (enabled.HasValue) param["enabled"] = enabled.Value;
+            if (pulseWidth.HasValue) param["pulseWidth"] = pulseWidth.Value;
+            if (floor.HasValue) param["floor"] = floor.Value;
+            if (ceiling.HasValue) param["ceiling"] = ceiling.Value;
+            Call("set_backlash_comp", param);
+        }
+
     }
 }
