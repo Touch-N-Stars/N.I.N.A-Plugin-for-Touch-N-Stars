@@ -33,6 +33,8 @@ public class StellariumLandscapeService
     private static readonly bool SwapFaceAxes = true;
     private static readonly bool FlipFaceVAxis = false;
     private static readonly bool FlipFaceUAxis = false;
+    private static readonly bool FlipPanoramaHorizontally = true;
+    private static readonly bool FlipPanoramaVertically = false;
 
     private static readonly WebpEncoder TileEncoder = new()
     {
@@ -370,7 +372,14 @@ public class StellariumLandscapeService
         double lon = HealpixNestedProjection.NormalizeLongitudeRadians(longitudeRadians);
 
         double x = lon / (2.0 * Math.PI) * source.Width;
-        double y = (Math.PI / 2.0 - latitudeRadians) / Math.PI * source.Height;
+        if (FlipPanoramaHorizontally)
+        {
+            x = source.Width - x;
+        }
+
+        double y = FlipPanoramaVertically
+            ? (Math.PI / 2.0 + latitudeRadians) / Math.PI * source.Height
+            : (Math.PI / 2.0 - latitudeRadians) / Math.PI * source.Height;
 
         y = Math.Clamp(y, 0.0, source.Height - 1.000001);
 
