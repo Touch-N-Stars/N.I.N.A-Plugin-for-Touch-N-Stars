@@ -38,6 +38,7 @@ public class StellariumLandscapeService
     private const string FrontendAppFolderName = "app";
     private const string StellariumDataFolderName = "stellarium-data";
     private const string LandscapesFolderName = "landscapes";
+    private const string NormalizedPluginFolderName = "touchnstars";
 
     private static readonly WebpEncoder TileEncoder = new()
     {
@@ -580,10 +581,19 @@ public class StellariumLandscapeService
         {
             foreach (string versionFolder in Directory.GetDirectories(ninaPluginsRoot))
             {
-                string appFolder = Path.Combine(versionFolder, "Touch 'N' Stars", FrontendAppFolderName);
-                if (Directory.Exists(appFolder))
+                foreach (string pluginFolder in Directory.GetDirectories(versionFolder))
                 {
-                    return EnsureLandscapesDirectory(appFolder, createIfMissing);
+                    string pluginFolderName = Path.GetFileName(pluginFolder);
+                    if (!IsTouchNStarsPluginFolder(pluginFolderName))
+                    {
+                        continue;
+                    }
+
+                    string appFolder = Path.Combine(pluginFolder, FrontendAppFolderName);
+                    if (Directory.Exists(appFolder))
+                    {
+                        return EnsureLandscapesDirectory(appFolder, createIfMissing);
+                    }
                 }
             }
         }
@@ -629,6 +639,31 @@ public class StellariumLandscapeService
         }
 
         return landscapesPath;
+    }
+
+    private static bool IsTouchNStarsPluginFolder(string folderName)
+    {
+        if (string.IsNullOrWhiteSpace(folderName))
+        {
+            return false;
+        }
+
+        string normalized = NormalizeFolderName(folderName);
+        return string.Equals(normalized, NormalizedPluginFolderName, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeFolderName(string value)
+    {
+        StringBuilder normalized = new(value.Length);
+        foreach (char ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                normalized.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return normalized.ToString();
     }
 
     private static string TryReadObsTitle(string propertiesPath)
