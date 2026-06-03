@@ -35,6 +35,9 @@ public class StellariumLandscapeService
     private static readonly bool FlipFaceUAxis = false;
     private static readonly bool FlipPanoramaHorizontally = true;
     private static readonly bool FlipPanoramaVertically = false;
+    private const string FrontendAppFolderName = "app";
+    private const string StellariumDataFolderName = "stellarium-data";
+    private const string LandscapesFolderName = "landscapes";
 
     private static readonly WebpEncoder TileEncoder = new()
     {
@@ -99,6 +102,20 @@ public class StellariumLandscapeService
             string description = BuildDescriptionFile(request.Name, request.Description, request.Author);
 
             byte[] zipBytes = BuildLandscapeZip(sanitizedFolderName, properties, description, allskyBytes, tileBytes);
+
+            // Auto-install into frontend static data if a valid app path can be resolved.
+            string installPath = TryInstallLandscapeToFrontend(
+                sanitizedFolderName,
+                properties,
+                description,
+                allskyBytes,
+                tileBytes);
+
+            if (!string.IsNullOrWhiteSpace(installPath))
+            {
+                Logger.Info($"[StellariumLandscapeService] Landscape installed to '{installPath}'.");
+            }
+
             string downloadName = $"{sanitizedFolderName}.zip";
 
             return LandscapeBuildResult.FromSuccess(zipBytes, downloadName, sanitizedFolderName);
@@ -111,6 +128,54 @@ public class StellariumLandscapeService
         {
             Logger.Error($"[StellariumLandscapeService] Landscape build failed: {ex}");
             return LandscapeBuildResult.FromFailure("Failed to create landscape package.");
+        }
+    }
+
+    public IReadOnlyList<InstalledLandscapeInfo> ListInstalledLandscapes()
+    {
+        try
+        {
+            string landscapesRoot = ResolveFrontendLandscapesRoot(createIfMissing: false);
+            if (string.IsNullOrWhiteSpace(landscapesRoot) || !Directory.Exists(landscapesRoot))
+            {
+                return Array.Empty<InstalledLandscapeInfo>();
+            }
+
+            List<InstalledLandscapeInfo> results = new();
+            foreach (string folderPath in Directory.GetDirectories(landscapesRoot))
+            {
+                string folderName = Path.GetFileName(folderPath);
+                if (string.IsNullOrWhiteSpace(folderName))
+                {
+                    continue;
+                }
+
+                string propertiesPath = Path.Combine(folderPath, "properties");
+                string allskyPath = Path.Combine(folderPath, "Norder0", "Allsky.webp");
+                if (!File.Exists(propertiesPath) && !File.Exists(allskyPath))
+                {
+                    continue;
+                }
+
+                string title = TryReadObsTitle(propertiesPath) ?? folderName;
+
+                results.Add(new InstalledLandscapeInfo
+                {
+                    FolderName = folderName,
+                    Title = title,
+                    ServiceUrl = $"/stellarium-data/landscapes/{folderName}",
+                    HasAllsky = File.Exists(allskyPath)
+                });
+            }
+
+            return results
+                .OrderBy(x => x.FolderName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"[StellariumLandscapeService] ListInstalledLandscapes failed: {ex.Message}");
+            return Array.Empty<InstalledLandscapeInfo>();
         }
     }
 
@@ -442,6 +507,176 @@ public class StellariumLandscapeService
         ZipArchiveEntry entry = archive.CreateEntry(path, CompressionLevel.Optimal);
         using Stream stream = entry.Open();
         stream.Write(data, 0, data.Length);
+    }
+
+    private static string TryInstallLandscapeToFrontend(
+        string folderName,
+        string propertiesContent,
+        string descriptionContent,
+        byte[] allskyWebp,
+        IReadOnlyList<byte[]> npixTiles)
+    {
+        try
+        {
+            string landscapesRoot = ResolveFrontendLandscapesRoot(createIfMissing: true);
+            if (string.IsNullOrWhiteSpace(landscapesRoot))
+            {
+                return null;
+            }
+
+            string targetRoot = Path.Combine(landscapesRoot, folderName);
+            if (Directory.Exists(targetRoot))
+            {
+                Directory.Delete(targetRoot, recursive: true);
+            }
+
+            Directory.CreateDirectory(Path.Combine(targetRoot, "Norder0", "Dir0"));
+
+            File.WriteAllText(
+                Path.Combine(targetRoot, "properties"),
+                propertiesContent ?? string.Empty,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            File.WriteAllText(
+                Path.Combine(targetRoot, "description.en.utf8"),
+                descriptionContent ?? string.Empty,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            File.WriteAllBytes(Path.Combine(targetRoot, "Norder0", "Allsky.webp"), allskyWebp);
+
+            for (int i = 0; i < npixTiles.Count; i++)
+            {
+                File.WriteAllBytes(
+                    Path.Combine(targetRoot, "Norder0", "Dir0", $"Npix{i}.webp"),
+                    npixTiles[i]);
+            }
+
+            return targetRoot;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"[StellariumLandscapeService] Auto-install failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string ResolveFrontendLandscapesRoot(bool createIfMissing)
+    {
+        string configuredAppPath = Environment.GetEnvironmentVariable("TNS_FRONTEND_APP_PATH");
+        if (!string.IsNullOrWhiteSpace(configuredAppPath))
+        {
+            return EnsureLandscapesDirectory(configuredAppPath, createIfMissing);
+        }
+
+        string fromBaseDirectory = TryResolveFromBaseDirectory(AppContext.BaseDirectory, createIfMissing);
+        if (!string.IsNullOrWhiteSpace(fromBaseDirectory))
+        {
+            return fromBaseDirectory;
+        }
+
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string ninaPluginsRoot = Path.Combine(localAppData, "NINA", "Plugins");
+        if (Directory.Exists(ninaPluginsRoot))
+        {
+            foreach (string versionFolder in Directory.GetDirectories(ninaPluginsRoot))
+            {
+                string appFolder = Path.Combine(versionFolder, "Touch 'N' Stars", FrontendAppFolderName);
+                if (Directory.Exists(appFolder))
+                {
+                    return EnsureLandscapesDirectory(appFolder, createIfMissing);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string TryResolveFromBaseDirectory(string baseDirectory, bool createIfMissing)
+    {
+        if (string.IsNullOrWhiteSpace(baseDirectory))
+        {
+            return null;
+        }
+
+        DirectoryInfo current = new(baseDirectory);
+        for (int i = 0; i < 6 && current != null; i++)
+        {
+            string candidateApp = Path.Combine(current.FullName, FrontendAppFolderName);
+            if (Directory.Exists(candidateApp))
+            {
+                return EnsureLandscapesDirectory(candidateApp, createIfMissing);
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
+    }
+
+    private static string EnsureLandscapesDirectory(string appFolder, bool createIfMissing)
+    {
+        string landscapesPath = Path.Combine(appFolder, StellariumDataFolderName, LandscapesFolderName);
+
+        if (createIfMissing)
+        {
+            Directory.CreateDirectory(landscapesPath);
+            return landscapesPath;
+        }
+
+        if (!Directory.Exists(landscapesPath))
+        {
+            return null;
+        }
+
+        return landscapesPath;
+    }
+
+    private static string TryReadObsTitle(string propertiesPath)
+    {
+        try
+        {
+            if (!File.Exists(propertiesPath))
+            {
+                return null;
+            }
+
+            foreach (string line in File.ReadLines(propertiesPath))
+            {
+                if (!line.StartsWith("obs_title", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                int separatorIndex = line.IndexOf('=');
+                if (separatorIndex < 0 || separatorIndex + 1 >= line.Length)
+                {
+                    continue;
+                }
+
+                string value = line[(separatorIndex + 1)..].Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public class InstalledLandscapeInfo
+    {
+        public string FolderName { get; set; }
+
+        public string Title { get; set; }
+
+        public string ServiceUrl { get; set; }
+
+        public bool HasAllsky { get; set; }
     }
 
     public class LandscapeBuildResult

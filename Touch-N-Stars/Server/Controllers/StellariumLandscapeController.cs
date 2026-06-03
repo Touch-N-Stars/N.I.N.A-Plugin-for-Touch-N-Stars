@@ -20,6 +20,21 @@ public class StellariumLandscapeController : WebApiController
 {
     private readonly StellariumLandscapeService landscapeService = new();
 
+    [Route(HttpVerbs.Get, "/stellarium/landscape/list")]
+    public Task ListAvailable()
+    {
+        try
+        {
+            IReadOnlyList<StellariumLandscapeService.InstalledLandscapeInfo> landscapes = landscapeService.ListInstalledLandscapes();
+            return SendJson(new { success = true, landscapes }, 200);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[StellariumLandscapeController.ListAvailable] {ex.Message}", ex);
+            return SendJson(new { success = false, error = "Failed to list installed landscapes." }, 500);
+        }
+    }
+
     [Route(HttpVerbs.Post, "/stellarium/landscape/create")]
     public async Task Create()
     {
