@@ -1485,6 +1485,27 @@ public class TenMicronController : WebApiController
             if (!ok)
                 return Error("Failed to delete worst alignment star");
 
+            // Mirror the WPF flow: trigger a fresh model reload from the mount so the
+            // cache reflects the updated star count and RMS before the next GET.
+            var vmHandler = GetMediatorHandler(modelMediator);
+            if (vmHandler != null)
+            {
+                var ct = CancellationToken.None;
+                var ctsField = vmHandler.GetType().GetField("disconnectCts",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var cts = ctsField?.GetValue(vmHandler) as CancellationTokenSource;
+                if (cts != null) ct = cts.Token;
+
+                var loadMethod = vmHandler.GetType().GetMethod("LoadAlignmentModel",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (loadMethod != null)
+                {
+                    var loadTask = loadMethod.Invoke(vmHandler, new object[] { ct }) as Task;
+                    if (loadTask != null)
+                        await loadTask.ConfigureAwait(false);
+                }
+            }
+
             return new Dictionary<string, object>
             {
                 { "Success", true },
@@ -1496,6 +1517,83 @@ public class TenMicronController : WebApiController
         catch (Exception ex)
         {
             Logger.Error("TenMicron DeleteWorstStar failed", ex);
+            return Error(ex.Message);
+        }
+    }
+
+    /// <summary>POST /tenmicron/refresh-alignment-model — force a fresh load from the mount and return the updated model (mirrors WPF RefreshCommand)</summary>
+    [Route(HttpVerbs.Post, "/tenmicron/refresh-alignment-model")]
+    public async Task<object> RefreshAlignmentModel()
+    {
+        if (!IsPluginLoaded()) return PluginNotLoaded();
+        try
+        {
+            var modelMediator = GetMountModelMediator();
+            var vmHandler = GetMediatorHandler(modelMediator);
+
+            if (vmHandler != null)
+            {
+                var ct = CancellationToken.None;
+                var ctsField = vmHandler.GetType().GetField("disconnectCts",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var cts = ctsField?.GetValue(vmHandler) as CancellationTokenSource;
+                if (cts != null) ct = cts.Token;
+
+                var loadMethod = vmHandler.GetType().GetMethod("LoadAlignmentModel",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (loadMethod != null)
+                {
+                    var loadTask = loadMethod.Invoke(vmHandler, new object[] { ct }) as Task;
+                    if (loadTask != null)
+                        await loadTask.ConfigureAwait(false);
+                }
+            }
+
+            var info = CallMethod(modelMediator, "GetInfo");
+            var loadedModel = info != null ? GetProp<object>(info, "LoadedAlignmentModel") : null;
+            var modelLoaded = vmHandler != null && GetProp<bool>(vmHandler, "ModelLoaded");
+
+            if (loadedModel == null || !modelLoaded)
+                return new Dictionary<string, object> { { "Success", true }, { "ModelLoaded", false } };
+
+            var starsCollection = GetProp<object>(loadedModel, "AlignmentStars");
+            var starsList = new List<Dictionary<string, object>>();
+            if (starsCollection is System.Collections.IEnumerable enumerable)
+            {
+                foreach (var star in enumerable)
+                {
+                    starsList.Add(new Dictionary<string, object>
+                    {
+                        { "Altitude",         Math.Round(GetProp<double>(star, "Altitude"), 2) },
+                        { "Azimuth",          Math.Round(GetProp<double>(star, "Azimuth"), 2) },
+                        { "ErrorArcsec",      Math.Round(GetProp<double>(star, "ErrorArcsec"), 2) },
+                        { "ErrorPointRadius", Math.Round(GetProp<double>(star, "ErrorPointRadius"), 2) }
+                    });
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "Success",       true },
+                { "ModelLoaded",   true },
+                { "AlignmentStarCount",  GetProp<int>(loadedModel, "AlignmentStarCount") },
+                { "RMSError",            (double)GetProp<decimal>(loadedModel, "RMSError") },
+                { "RightAscensionAltitude",                  (double)GetProp<decimal>(loadedModel, "RightAscensionAltitude") },
+                { "RightAscensionAzimuth",                   (double)GetProp<decimal>(loadedModel, "RightAscensionAzimuth") },
+                { "PolarAlignErrorDegrees",                  (double)GetProp<decimal>(loadedModel, "PolarAlignErrorDegrees") },
+                { "PAErrorAltitudeDegrees",                  (double)GetProp<decimal>(loadedModel, "PAErrorAltitudeDegrees") },
+                { "PAErrorAzimuthDegrees",                   (double)GetProp<decimal>(loadedModel, "PAErrorAzimuthDegrees") },
+                { "RightAscensionPolarPositionAngleDegrees", (double)GetProp<decimal>(loadedModel, "RightAscensionPolarPositionAngleDegrees") },
+                { "OrthogonalityErrorDegrees",               (double)GetProp<decimal>(loadedModel, "OrthogonalityErrorDegrees") },
+                { "AzimuthAdjustmentTurns",                  (double)GetProp<decimal>(loadedModel, "AzimuthAdjustmentTurns") },
+                { "AltitudeAdjustmentTurns",                 (double)GetProp<decimal>(loadedModel, "AltitudeAdjustmentTurns") },
+                { "ModelTerms",    GetProp<int>(loadedModel, "ModelTerms") },
+                { "AlignmentStars", starsList }
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("TenMicron RefreshAlignmentModel failed", ex);
             return Error(ex.Message);
         }
     }
