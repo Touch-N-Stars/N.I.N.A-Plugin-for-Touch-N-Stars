@@ -354,11 +354,10 @@ public class FilterOffsetController : WebApiController
     private async Task RunCalculation(List<FilterInfo> selectedFilters, int loops, CancellationToken token)
     {
         var profile = TouchNStars.Mediators.Profile.ActiveProfile;
-        var allFilters = profile.FilterWheelSettings.FilterWheelFilters;
 
         // 1. Save old state
         _oldUseOffsets = profile.FocuserSettings.UseFilterWheelOffsets;
-        _oldDefaultFilterPosition = allFilters.FirstOrDefault(f => f.AutoFocusFilter)?.Position;
+        _oldDefaultFilterPosition = profile.FilterWheelSettings.FilterWheelFilters.FirstOrDefault(f => f.AutoFocusFilter)?.Position;
         _oldOffsets = selectedFilters
             .Select(f => ((int)f.Position, f.Name, f.FocusOffset))
             .ToList();
@@ -391,21 +390,22 @@ public class FilterOffsetController : WebApiController
                 _currentFilterIndex++;
                 _currentFilterName = filter.Name;
 
-                // Find the zero-based collection index (ninaAPI change-filter uses index, not Position)
-                int filterIndex = allFilters.ToList().IndexOf(filter);
-                if (filterIndex < 0)
-                    throw new Exception($"Filter '{filter.Name}' not found in profile collection");
+                Logger.Info($"FilterOffset: loop {_currentLoop}/{loops} — switching to filter '{filter.Name}' (position {filter.Position})");
 
-                Logger.Info($"FilterOffset: loop {_currentLoop}/{loops} — switching to filter '{filter.Name}' (index {filterIndex})");
-
-                // Switch filter
-                await client.GetAsync(
-                    $"{apiUrl}/equipment/filterwheel/change-filter?filterId={filterIndex}", token);
-
-                // Wait for filter wheel to finish moving
-                await WaitForFilterWheelAsync(token);
+                // Switch filter via mediator — avoids the collection-index lookup entirely.
+                // FilterWheelVM.ChangeFilter finds the target by Position value and waits until
+                // the wheel finishes moving, so no separate WaitForFilterWheelAsync is needed.
+                await TouchNStars.Mediators.FilterWheel.ChangeFilter(filter, token);
 
                 Logger.Info($"FilterOffset: running AutoFocus for filter '{filter.Name}'");
+
+                // Re-apply suppression immediately before each AF trigger.
+                // Something resets UseFilterWheelOffsets or AutoFocusFilter between iterations;
+                // keeping both false prevents HocusFocus's SetAutofocusFilter from switching
+                // the filter wheel away from the intended target during the AF run.
+                profile.FocuserSettings.UseFilterWheelOffsets = false;
+                foreach (var f in profile.FilterWheelSettings.FilterWheelFilters)
+                    f.AutoFocusFilter = false;
 
                 // Reset AF tracking state and start AF (ninaAPI call is async: returns "started" immediately)
                 lock (DataContainer.lockObj)
@@ -448,18 +448,6 @@ public class FilterOffsetController : WebApiController
         };
 
         _state = "PendingResult";
-    }
-
-    private static async Task WaitForFilterWheelAsync(CancellationToken token)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
-        {
-            token.ThrowIfCancellationRequested();
-            var info = TouchNStars.Mediators.FilterWheel.GetInfo();
-            if (!info.IsMoving) return;
-            await Task.Delay(200, token);
-        }
     }
 
     private static async Task WaitForAutofocusAsync(CancellationToken token)
