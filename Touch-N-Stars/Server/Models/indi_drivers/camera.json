@@ -19,7 +19,6 @@
   { "Name": "indi_sony_ccd", "Label": "Sony DSLR", "Type": "camera" },
   { "Name": "indi_starshootg_ccd", "Label": "Orion StarShoot G", "Type": "camera" },
   { "Name": "indi_sx_ccd", "Label": "Starlight Xpress SX", "Type": "camera" },
-  { "Name": "indi_toupcam_ccd", "Label": "ToupTek ToupCam", "Type": "camera" },
   { "Name": "indi_v4l2_ccd", "Label": "V4L2 CCD", "Type": "camera" },
   { "Name": "indi_webcam_ccd", "Label": "Webcam CCD", "Type": "camera" }
 ]
