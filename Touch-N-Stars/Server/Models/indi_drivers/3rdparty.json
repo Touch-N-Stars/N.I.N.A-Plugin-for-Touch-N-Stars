@@ -1,4 +1,5 @@
 {
+  "camera": [],
   "dome": [],
   "filterwheel": [
     { "Name": "indi_example", "Label": "Example Filter Wheel", "Type": "filterwheel" }

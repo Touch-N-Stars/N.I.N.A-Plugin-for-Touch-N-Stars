@@ -18,6 +18,7 @@ public static class INDIDriverRegistry
 {
     private static readonly string[] BuiltInDriverTypes =
     [
+        "camera",
         "dome",
         "filterwheel",
         "flatpanel",

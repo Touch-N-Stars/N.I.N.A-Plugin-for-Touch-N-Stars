@@ -17,6 +17,15 @@ namespace TouchNStars.Server.Controllers;
 public class INDIController : WebApiController
 {
     /// <summary>
+    /// GET /api/indi/camera - Get available INDI camera drivers
+    /// </summary>
+    [Route(HttpVerbs.Get, "/indi/camera")]
+    public ApiResponse GetCameraDrivers()
+    {
+        return GetDriversByType("camera");
+    }
+
+    /// <summary>
     /// GET /api/indi/focuser - Get available INDI focuser drivers
     /// </summary>
     [Route(HttpVerbs.Get, "/indi/focuser")]
