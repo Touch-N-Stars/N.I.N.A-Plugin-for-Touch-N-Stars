@@ -128,11 +128,19 @@ namespace TouchNStars.Server {
         }
 
         protected override async Task OnRequestAsync(IHttpContext context) {
+            string requestHeaders = context.Request.Headers["Access-Control-Request-Headers"];
+            string allowHeaders = "Content-Type, Authorization, X-Suppress-Toast-404, X-Requested-With, X-Bahtinov-Metadata";
+
+            if (!string.IsNullOrWhiteSpace(requestHeaders)) {
+                allowHeaders = $"{allowHeaders}, {requestHeaders}";
+            }
+
             context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-            context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Suppress-Toast-404, X-Requested-With");
+            context.Response.Headers.Add("Access-Control-Allow-Headers", allowHeaders);
             context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
 
             if (context.Request.HttpVerb == HttpVerbs.Options) {
+                Logger.Info($"CORS preflight handled. RequestMethod={context.Request.Headers["Access-Control-Request-Method"] ?? "<none>"}; RequestHeaders={requestHeaders ?? "<none>"}");
                 context.Response.StatusCode = 200;
                 await context.SendStringAsync(string.Empty, "text/plain", Encoding.UTF8);
                 return;

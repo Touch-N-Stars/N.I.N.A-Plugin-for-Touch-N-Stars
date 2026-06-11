@@ -16,6 +16,7 @@ namespace TouchNStars.Server.Controllers {
         [Route(HttpVerbs.Post, "/bahtinov/analyze")]
         public async Task<ApiResponse> Analyze() {
             string inboundContentType = HttpContext.Request.ContentType ?? "<none>";
+            string requestOrigin = HttpContext.Request.Headers["Origin"] ?? "<none>";
             Logger.Info($"Received Bahtinov analyze request. ContentType={inboundContentType}");
 
             try {
@@ -32,7 +33,7 @@ namespace TouchNStars.Server.Controllers {
                     Type = "BahtinovAnalysis"
                 };
             } catch (ArgumentException ex) {
-                Logger.Warning($"Bahtinov analysis request invalid: {ex.Message}");
+                Logger.Warning($"Bahtinov analysis request invalid. Origin={requestOrigin}; ContentType={inboundContentType}; Error={ex.Message}");
                 HttpContext.Response.StatusCode = 400;
                 return new ApiResponse {
                     Success = false,
@@ -41,7 +42,7 @@ namespace TouchNStars.Server.Controllers {
                     Type = "BadRequest"
                 };
             } catch (Exception ex) {
-                Logger.Error(ex);
+                Logger.Error($"Bahtinov analysis failed. Origin={requestOrigin}; ContentType={inboundContentType}; Message={ex.Message}", ex);
                 HttpContext.Response.StatusCode = 500;
                 return new ApiResponse {
                     Success = false,
@@ -98,6 +99,7 @@ namespace TouchNStars.Server.Controllers {
                 return request;
             }
 
+            Logger.Warning($"Bahtinov analyze rejected unsupported content type '{contentType}'.");
             throw new ArgumentException($"Unsupported content type '{contentType}'. Use application/json or a supported binary image type.");
         }
 
@@ -114,7 +116,10 @@ namespace TouchNStars.Server.Controllers {
                 || Matches(contentType, "application/fits")
                 || Matches(contentType, "image/jpeg")
                 || Matches(contentType, "image/png")
+                || Matches(contentType, "image/bmp")
+                || Matches(contentType, "image/gif")
                 || Matches(contentType, "image/tiff")
+                || Matches(contentType, "image/webp")
                 || Matches(contentType, "image/fits")
                 || Matches(contentType, "image/fit")
                 || Matches(contentType, "image/x-fits");
