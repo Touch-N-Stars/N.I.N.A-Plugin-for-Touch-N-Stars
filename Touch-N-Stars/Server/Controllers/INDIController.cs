@@ -144,6 +144,27 @@ public class INDIController : WebApiController
         }
     }
 
+    /// <summary>
+    /// GET /api/indi/messages[?limit=200] - Return the most recent human-readable INDI messages
+    /// (driver/server log lines) with their timestamps, oldest first.
+    /// </summary>
+    [Route(HttpVerbs.Get, "/indi/messages")]
+    public ApiResponse GetMessages([QueryField] int limit)
+    {
+        try
+        {
+            var messages = INDIClient.Instance.GetMessages(limit > 0 ? limit : 200);
+
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Response = messages, StatusCode = 200, Type = "INDIMessages" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error retrieving INDI messages: {ex}");
+            return ErrorResponse("An unexpected error occurred while retrieving INDI messages");
+        }
+    }
+
     private ApiResponse ErrorResponse(string error, int statusCode = 500)
     {
         HttpContext.Response.StatusCode = statusCode;
