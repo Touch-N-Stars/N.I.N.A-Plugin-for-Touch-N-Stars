@@ -3,11 +3,13 @@ using EmbedIO;
 using EmbedIO.Routing;
 using EmbedIO.WebApi;
 using NINA.Core.Utility;
+using NINA.INDI;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace TouchNStars.Server.Controllers;
 
@@ -16,6 +18,138 @@ namespace TouchNStars.Server.Controllers;
 /// </summary>
 public class INDIController : WebApiController
 {
+    /// <summary>
+    /// GET /api/indi/devices - List every INDI device currently visible to the embedded indiserver,
+    /// together with its driver metadata and connection state. Drivers only appear once NINA (or
+    /// another client of the same server) has loaded them.
+    /// </summary>
+    [Route(HttpVerbs.Get, "/indi/devices")]
+    public ApiResponse GetActiveDevices()
+    {
+        try
+        {
+            var devices = INDIClient.Instance.GetDeviceSnapshots()
+                .Select(d => new
+                {
+                    d.Device,
+                    d.DriverExec,
+                    d.DriverName,
+                    d.Version,
+                    d.Interface,
+                    d.Connected,
+                    PropertyCount = d.Properties.Count
+                })
+                .OrderBy(d => d.Device, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Response = devices, StatusCode = 200, Type = "INDIDevices" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error retrieving active INDI devices: {ex}");
+            return ErrorResponse("An unexpected error occurred while retrieving active INDI devices");
+        }
+    }
+
+    /// <summary>
+    /// GET /api/indi/properties[?device=Name] - Return the full property tree for all devices, or for
+    /// a single device when the query parameter is supplied. This is the generic surface that backs
+    /// the INDI control panel: every property of every type is included, whatever it is.
+    /// </summary>
+    [Route(HttpVerbs.Get, "/indi/properties")]
+    public ApiResponse GetProperties([QueryField] string device)
+    {
+        try
+        {
+            var snapshots = INDIClient.Instance.GetDeviceSnapshots(string.IsNullOrWhiteSpace(device) ? null : device);
+
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Response = snapshots, StatusCode = 200, Type = "INDIProperties" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error retrieving INDI properties: {ex}");
+            return ErrorResponse("An unexpected error occurred while retrieving INDI properties");
+        }
+    }
+
+    /// <summary>
+    /// POST /api/indi/properties/refresh[?device=Name] - Ask the server to re-send property definitions
+    /// (getProperties). Useful right after opening the control panel to force a fresh snapshot.
+    /// </summary>
+    [Route(HttpVerbs.Post, "/indi/properties/refresh")]
+    public ApiResponse RefreshProperties([QueryField] string device)
+    {
+        try
+        {
+            INDIClient.Instance.GetProperties(string.IsNullOrWhiteSpace(device) ? null : device);
+
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Response = "Property refresh requested", StatusCode = 200, Type = "INDIRefresh" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error refreshing INDI properties: {ex}");
+            return ErrorResponse("An unexpected error occurred while refreshing INDI properties");
+        }
+    }
+
+    /// <summary>
+    /// POST /api/indi/properties/set - Write a writable property on any device.
+    /// Body: { "device": "Telescope Simulator", "property": "EQUATORIAL_EOD_COORD",
+    ///         "elements": { "RA": 12.34, "DEC": 56.7 } }
+    /// Switch elements accept true/false (or "On"/"Off"); switch rules are honored server-side.
+    /// </summary>
+    [Route(HttpVerbs.Post, "/indi/properties/set")]
+    public async Task<ApiResponse> SetProperty()
+    {
+        try
+        {
+            var body = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+
+            var device = body != null && body.TryGetValue("device", out var d) ? d?.ToString() : null;
+            var property = body != null && body.TryGetValue("property", out var p) ? p?.ToString() : null;
+
+            if (string.IsNullOrWhiteSpace(device) || string.IsNullOrWhiteSpace(property))
+            {
+                return ErrorResponse("Body must contain 'device' and 'property'", 400);
+            }
+
+            if (body == null || !body.TryGetValue("elements", out var elementsObj)
+                || elementsObj is not IDictionary<string, object> elements
+                || elements.Count == 0)
+            {
+                return ErrorResponse("Body must contain a non-empty 'elements' object", 400);
+            }
+
+            if (!INDIClient.Instance.SetProperty(device, property, elements, out var error))
+            {
+                return ErrorResponse(error ?? "Failed to set property", 400);
+            }
+
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse
+            {
+                Success = true,
+                Response = new { device, property },
+                StatusCode = 200,
+                Type = "INDISetProperty"
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error setting INDI property: {ex}");
+            return ErrorResponse("An unexpected error occurred while setting the INDI property");
+        }
+    }
+
+    private ApiResponse ErrorResponse(string error, int statusCode = 500)
+    {
+        HttpContext.Response.StatusCode = statusCode;
+        return new ApiResponse { Success = false, Error = error, StatusCode = statusCode, Type = "Error" };
+    }
+
     /// <summary>
     /// GET /api/indi/camera - Get available INDI camera drivers
     /// </summary>
