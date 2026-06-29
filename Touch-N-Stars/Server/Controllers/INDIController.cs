@@ -4,8 +4,11 @@ using EmbedIO.Routing;
 using EmbedIO.WebApi;
 using NINA.Core.Utility;
 using NINA.INDI;
+using NINA.INDI.Devices;
+using NINA.INDI.Model;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
@@ -141,6 +144,92 @@ public class INDIController : WebApiController
         {
             Logger.Error($"Error setting INDI property: {ex}");
             return ErrorResponse("An unexpected error occurred while setting the INDI property");
+        }
+    }
+
+    /// <summary>
+    /// GET /api/indi/mount/slew-rates[?device=Name] - Describe how the connected INDI mount lets a
+    /// client choose its manual (MoveAxis) slew rate. Returns a SlewRateCapability: discrete named
+    /// switch steps, a continuous numeric °/s range, or none. The frontend should render its rate
+    /// control from this instead of assuming a fixed scale. Defaults to the first connected mount.
+    /// </summary>
+    [Route(HttpVerbs.Get, "/indi/mount/slew-rates")]
+    public ApiResponse GetMountSlewRates([QueryField] string device)
+    {
+        try
+        {
+            var mount = INDIClient.Instance.GetRegisteredDevice<INDITelescope>(
+                string.IsNullOrWhiteSpace(device) ? null : device);
+            if (mount == null)
+            {
+                return ErrorResponse("No INDI mount is currently connected", 404);
+            }
+
+            var capability = mount.GetSlewRateCapability();
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Response = capability, StatusCode = 200, Type = "INDIMountSlewRates" };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error retrieving INDI mount slew rates: {ex}");
+            return ErrorResponse("An unexpected error occurred while retrieving mount slew rates");
+        }
+    }
+
+    /// <summary>
+    /// POST /api/indi/mount/slew-rate - Select the mount's manual slew rate.
+    /// Body: { "device": "EQMod Mount", "index": 3 } for discrete drivers, or
+    ///       { "device": "Telescope Simulator", "value": 1.5 } (°/s) for continuous drivers.
+    /// The selector must match the driver's capability kind; 'device' is optional and defaults
+    /// to the first connected mount.
+    /// </summary>
+    [Route(HttpVerbs.Post, "/indi/mount/slew-rate")]
+    public async Task<ApiResponse> SetMountSlewRate()
+    {
+        try
+        {
+            var body = await HttpContext.GetRequestDataAsync<Dictionary<string, object>>();
+            var device = body != null && body.TryGetValue("device", out var d) ? d?.ToString() : null;
+
+            var mount = INDIClient.Instance.GetRegisteredDevice<INDITelescope>(
+                string.IsNullOrWhiteSpace(device) ? null : device);
+            if (mount == null)
+            {
+                return ErrorResponse("No INDI mount is currently connected", 404);
+            }
+
+            var capability = mount.GetSlewRateCapability();
+
+            if (body != null && body.TryGetValue("index", out var indexObj)
+                && int.TryParse(indexObj?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+            {
+                if (capability.Kind != SlewRateKind.Discrete)
+                {
+                    return ErrorResponse("This mount does not use discrete slew rates; send 'value' instead", 400);
+                }
+                mount.SetSlewRateIndex(index);
+                HttpContext.Response.StatusCode = 200;
+                return new ApiResponse { Success = true, Response = new { device = mount.DeviceName, index }, StatusCode = 200, Type = "INDIMountSlewRate" };
+            }
+
+            if (body != null && body.TryGetValue("value", out var valueObj)
+                && double.TryParse(valueObj?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                if (capability.Kind != SlewRateKind.Continuous)
+                {
+                    return ErrorResponse("This mount does not use a continuous slew rate; send 'index' instead", 400);
+                }
+                mount.SetSlewRateValue(value);
+                HttpContext.Response.StatusCode = 200;
+                return new ApiResponse { Success = true, Response = new { device = mount.DeviceName, value }, StatusCode = 200, Type = "INDIMountSlewRate" };
+            }
+
+            return ErrorResponse("Body must contain an integer 'index' (discrete) or a numeric 'value' (continuous)", 400);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error setting INDI mount slew rate: {ex}");
+            return ErrorResponse("An unexpected error occurred while setting the mount slew rate");
         }
     }
 

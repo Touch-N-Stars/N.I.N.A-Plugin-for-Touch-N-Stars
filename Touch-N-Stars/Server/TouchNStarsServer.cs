@@ -73,6 +73,7 @@ namespace TouchNStars.Server {
                 .WithController<StellariumLandscapeController>()
                 .WithController<NightSummaryController>()
                 .WithController<GroundStationController>());
+            WebServer = WebServer.WithModule(new MountControlSocket("/ws/mount-control")); // Manual (press-hold) mount slewing, INDI-direct
             WebServer = WebServer.WithStaticFolder("/", webAppDir, false); // Register the static folder, which will be used to serve the web app
         }
 
