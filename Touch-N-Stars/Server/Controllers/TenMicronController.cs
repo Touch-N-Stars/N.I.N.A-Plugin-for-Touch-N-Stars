@@ -881,6 +881,13 @@ public class TenMicronController : WebApiController
                 { "DisableRefractionCorrection",GetProp<bool>(opts, "DisableRefractionCorrection") },
                 { "DecJitter",                  GetProp<double>(opts, "DecJitterSigmaDegrees") },
                 { "DisableDAT",                 GetProp<bool>(opts, "DisableDATAlignment") },
+                // point-generation inputs (persisted to the profile, like the WPF plugin)
+                { "GoldenSpiralStarCount",      GetProp<int>(opts, "GoldenSpiralStarCount") },
+                { "SiderealRaDelta",            GetProp<double>(opts, "SiderealTrackRADeltaDegrees") },
+                { "SiderealStartProvider",      GetProp<string>(opts, "SiderealTrackStartTimeProvider") ?? "" },
+                { "SiderealEndProvider",        GetProp<string>(opts, "SiderealTrackEndTimeProvider") ?? "" },
+                { "SiderealStartOffset",        GetProp<int>(opts, "SiderealTrackStartOffsetMinutes") },
+                { "SiderealEndOffset",          GetProp<int>(opts, "SiderealTrackEndOffsetMinutes") },
             };
         }
         catch (Exception ex)
@@ -941,6 +948,12 @@ public class TenMicronController : WebApiController
                 ["DisableRefractionCorrection"] = "DisableRefractionCorrection",
                 ["DecJitter"] = "DecJitterSigmaDegrees",
                 ["DisableDAT"] = "DisableDATAlignment",
+                ["GoldenSpiralStarCount"] = "GoldenSpiralStarCount",
+                ["SiderealRaDelta"] = "SiderealTrackRADeltaDegrees",
+                ["SiderealStartProvider"] = "SiderealTrackStartTimeProvider",
+                ["SiderealEndProvider"] = "SiderealTrackEndTimeProvider",
+                ["SiderealStartOffset"] = "SiderealTrackStartOffsetMinutes",
+                ["SiderealEndOffset"] = "SiderealTrackEndOffsetMinutes",
             };
 
             if (!propMap.TryGetValue(key, out var propName))
@@ -998,6 +1011,13 @@ public class TenMicronController : WebApiController
                 { "DisableRefractionCorrection",GetProp<bool>(opts, "DisableRefractionCorrection") },
                 { "DecJitter",                  GetProp<double>(opts, "DecJitterSigmaDegrees") },
                 { "DisableDAT",                 GetProp<bool>(opts, "DisableDATAlignment") },
+                // point-generation inputs (persisted to the profile, like the WPF plugin)
+                { "GoldenSpiralStarCount",      GetProp<int>(opts, "GoldenSpiralStarCount") },
+                { "SiderealRaDelta",            GetProp<double>(opts, "SiderealTrackRADeltaDegrees") },
+                { "SiderealStartProvider",      GetProp<string>(opts, "SiderealTrackStartTimeProvider") ?? "" },
+                { "SiderealEndProvider",        GetProp<string>(opts, "SiderealTrackEndTimeProvider") ?? "" },
+                { "SiderealStartOffset",        GetProp<int>(opts, "SiderealTrackStartOffsetMinutes") },
+                { "SiderealEndOffset",          GetProp<int>(opts, "SiderealTrackEndOffsetMinutes") },
             };
         }
         catch (Exception ex)
