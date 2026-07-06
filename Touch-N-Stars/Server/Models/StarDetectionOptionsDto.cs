@@ -38,5 +38,24 @@ namespace TouchNStars.Server.Models {
         public double HotpixelThreshold { get; set; }
         public double SaturationThreshold { get; set; }
         public string MeasurementAverage { get; set; }
+        public bool PSFPixelIntegration { get; set; }
+        public double ContaminationSensitivity { get; set; }
+        public bool RejectContaminatedStars { get; set; }
+        public bool DefocusAwareGates { get; set; }
+        public double DefocusDistortionSizeReference { get; set; }
+        public double DefocusDistortionMinFactor { get; set; }
+        public double DefocusCenteringToleranceFactor { get; set; }
+        public bool DefocusAwareDonutDetection { get; set; }
+        public int DonutMorphCloseSize { get; set; }
+        public double DonutMinAnnularityHoleFraction { get; set; }
+        public double DonutMaxStreakEccentricity { get; set; }
+        public double DonutSaturationBloomRadius { get; set; }
+        public bool DefocusAwareStructure { get; set; }
+        public int StructureLayerBoost { get; set; }
+        public bool LocallyAdaptiveBinarization { get; set; }
+        public int AdaptiveNoiseBlockSize { get; set; }
+        public bool ExcludeSaturatedStarsFromHFR { get; set; }
+        public bool UseOptimizedSettings { get; set; }
+        public bool HasOptimizedSettings { get; set; }
     }
 }

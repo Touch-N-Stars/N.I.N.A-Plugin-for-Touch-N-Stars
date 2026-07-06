@@ -1259,12 +1259,22 @@ public class HocusFocusController : WebApiController
 
             // Reflect over all properties and build a dictionary
             var optionsDict = new Dictionary<string, object>();
+            var enumOptionsDict = new Dictionary<string, string[]>();
             var optionsType = autoFocusOptions.GetType();
             foreach (var prop in optionsType.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
             {
                 try
                 {
-                    optionsDict[prop.Name] = prop.GetValue(autoFocusOptions);
+                    var value = prop.GetValue(autoFocusOptions);
+                    if (prop.PropertyType.IsEnum)
+                    {
+                        optionsDict[prop.Name] = value?.ToString();
+                        enumOptionsDict[prop.Name] = Enum.GetNames(prop.PropertyType);
+                    }
+                    else
+                    {
+                        optionsDict[prop.Name] = value;
+                    }
                 }
                 catch
                 {
@@ -1275,7 +1285,8 @@ public class HocusFocusController : WebApiController
             return new Dictionary<string, object>()
             {
                 { "Success", true },
-                { "Options", optionsDict }
+                { "Options", optionsDict },
+                { "EnumOptions", enumOptionsDict }
             };
         }
         catch (Exception ex)
@@ -1391,6 +1402,17 @@ public class HocusFocusController : WebApiController
                     else
                     {
                         convertedValue = Convert.ToBoolean(newValue);
+                    }
+                }
+                else if (targetType.IsEnum)
+                {
+                    if (newValue is JsonElement jelem)
+                    {
+                        convertedValue = Enum.Parse(targetType, jelem.GetString(), ignoreCase: true);
+                    }
+                    else
+                    {
+                        convertedValue = Enum.Parse(targetType, newValue.ToString(), ignoreCase: true);
                     }
                 }
                 else if (targetType == typeof(int) || targetType == typeof(double) || targetType == typeof(float) ||
@@ -2230,12 +2252,22 @@ public class HocusFocusController : WebApiController
 
             // Reflect over all properties and build a dictionary
             var optionsDict = new Dictionary<string, object>();
+            var enumOptionsDict = new Dictionary<string, string[]>();
             var optionsType = aberrationInspectorOptions.GetType();
             foreach (var prop in optionsType.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
             {
                 try
                 {
-                    optionsDict[prop.Name] = prop.GetValue(aberrationInspectorOptions);
+                    var value = prop.GetValue(aberrationInspectorOptions);
+                    if (prop.PropertyType.IsEnum)
+                    {
+                        optionsDict[prop.Name] = value?.ToString();
+                        enumOptionsDict[prop.Name] = Enum.GetNames(prop.PropertyType);
+                    }
+                    else
+                    {
+                        optionsDict[prop.Name] = value;
+                    }
                 }
                 catch
                 {
@@ -2246,7 +2278,8 @@ public class HocusFocusController : WebApiController
             return new Dictionary<string, object>()
             {
                 { "Success", true },
-                { "Options", optionsDict }
+                { "Options", optionsDict },
+                { "EnumOptions", enumOptionsDict }
             };
         }
         catch (Exception ex)

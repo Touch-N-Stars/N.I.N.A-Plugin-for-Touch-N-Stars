@@ -60,6 +60,25 @@ namespace TouchNStars.Server.Services {
                 dto.HotpixelThreshold = GetPropertyValueAsType<double>(starDetectionOptions, "HotpixelThreshold", 0);
                 dto.SaturationThreshold = GetPropertyValueAsType<double>(starDetectionOptions, "SaturationThreshold", 0);
                 dto.MeasurementAverage = ConvertEnumToString(GetPropertyValue(starDetectionOptions, "MeasurementAverage"));
+                dto.PSFPixelIntegration = GetPropertyValueAsType<bool>(starDetectionOptions, "PSFPixelIntegration", false);
+                dto.ContaminationSensitivity = GetPropertyValueAsType<double>(starDetectionOptions, "ContaminationSensitivity", 0);
+                dto.RejectContaminatedStars = GetPropertyValueAsType<bool>(starDetectionOptions, "RejectContaminatedStars", false);
+                dto.DefocusAwareGates = GetPropertyValueAsType<bool>(starDetectionOptions, "DefocusAwareGates", false);
+                dto.DefocusDistortionSizeReference = GetPropertyValueAsType<double>(starDetectionOptions, "DefocusDistortionSizeReference", 0);
+                dto.DefocusDistortionMinFactor = GetPropertyValueAsType<double>(starDetectionOptions, "DefocusDistortionMinFactor", 0);
+                dto.DefocusCenteringToleranceFactor = GetPropertyValueAsType<double>(starDetectionOptions, "DefocusCenteringToleranceFactor", 0);
+                dto.DefocusAwareDonutDetection = GetPropertyValueAsType<bool>(starDetectionOptions, "DefocusAwareDonutDetection", false);
+                dto.DonutMorphCloseSize = GetPropertyValueAsType<int>(starDetectionOptions, "DonutMorphCloseSize", 0);
+                dto.DonutMinAnnularityHoleFraction = GetPropertyValueAsType<double>(starDetectionOptions, "DonutMinAnnularityHoleFraction", 0);
+                dto.DonutMaxStreakEccentricity = GetPropertyValueAsType<double>(starDetectionOptions, "DonutMaxStreakEccentricity", 0);
+                dto.DonutSaturationBloomRadius = GetPropertyValueAsType<double>(starDetectionOptions, "DonutSaturationBloomRadius", 0);
+                dto.DefocusAwareStructure = GetPropertyValueAsType<bool>(starDetectionOptions, "DefocusAwareStructure", false);
+                dto.StructureLayerBoost = GetPropertyValueAsType<int>(starDetectionOptions, "StructureLayerBoost", 0);
+                dto.LocallyAdaptiveBinarization = GetPropertyValueAsType<bool>(starDetectionOptions, "LocallyAdaptiveBinarization", false);
+                dto.AdaptiveNoiseBlockSize = GetPropertyValueAsType<int>(starDetectionOptions, "AdaptiveNoiseBlockSize", 0);
+                dto.ExcludeSaturatedStarsFromHFR = GetPropertyValueAsType<bool>(starDetectionOptions, "ExcludeSaturatedStarsFromHFR", false);
+                dto.UseOptimizedSettings = GetPropertyValueAsType<bool>(starDetectionOptions, "UseOptimizedSettings", false);
+                dto.HasOptimizedSettings = GetPropertyValueAsType<bool>(starDetectionOptions, "HasOptimizedSettings", false);
 
                 return dto;
             } catch (Exception ex) {
@@ -115,6 +134,25 @@ namespace TouchNStars.Server.Services {
                 SetPropertyValue(starDetectionOptions, "HotpixelThreshold", dto.HotpixelThreshold);
                 SetPropertyValue(starDetectionOptions, "SaturationThreshold", dto.SaturationThreshold);
                 SetPropertyValueFromString(starDetectionOptions, "MeasurementAverage", dto.MeasurementAverage);
+                SetPropertyValue(starDetectionOptions, "PSFPixelIntegration", dto.PSFPixelIntegration);
+                SetPropertyValue(starDetectionOptions, "ContaminationSensitivity", dto.ContaminationSensitivity);
+                SetPropertyValue(starDetectionOptions, "RejectContaminatedStars", dto.RejectContaminatedStars);
+                SetPropertyValue(starDetectionOptions, "DefocusAwareGates", dto.DefocusAwareGates);
+                SetPropertyValue(starDetectionOptions, "DefocusDistortionSizeReference", dto.DefocusDistortionSizeReference);
+                SetPropertyValue(starDetectionOptions, "DefocusDistortionMinFactor", dto.DefocusDistortionMinFactor);
+                SetPropertyValue(starDetectionOptions, "DefocusCenteringToleranceFactor", dto.DefocusCenteringToleranceFactor);
+                SetPropertyValue(starDetectionOptions, "DefocusAwareDonutDetection", dto.DefocusAwareDonutDetection);
+                SetPropertyValue(starDetectionOptions, "DonutMorphCloseSize", dto.DonutMorphCloseSize);
+                SetPropertyValue(starDetectionOptions, "DonutMinAnnularityHoleFraction", dto.DonutMinAnnularityHoleFraction);
+                SetPropertyValue(starDetectionOptions, "DonutMaxStreakEccentricity", dto.DonutMaxStreakEccentricity);
+                SetPropertyValue(starDetectionOptions, "DonutSaturationBloomRadius", dto.DonutSaturationBloomRadius);
+                SetPropertyValue(starDetectionOptions, "DefocusAwareStructure", dto.DefocusAwareStructure);
+                SetPropertyValue(starDetectionOptions, "StructureLayerBoost", dto.StructureLayerBoost);
+                SetPropertyValue(starDetectionOptions, "LocallyAdaptiveBinarization", dto.LocallyAdaptiveBinarization);
+                SetPropertyValue(starDetectionOptions, "AdaptiveNoiseBlockSize", dto.AdaptiveNoiseBlockSize);
+                SetPropertyValue(starDetectionOptions, "ExcludeSaturatedStarsFromHFR", dto.ExcludeSaturatedStarsFromHFR);
+                SetPropertyValue(starDetectionOptions, "UseOptimizedSettings", dto.UseOptimizedSettings);
+                // HasOptimizedSettings is read-only (derived) — not set
 
                 return true;
             } catch (Exception ex) {
@@ -135,14 +173,14 @@ namespace TouchNStars.Server.Services {
                     return false;
                 }
 
-                // Call ResetToDefaults method via reflection
-                var method = starDetectionOptions.GetType().GetMethod("ResetToDefaults", BindingFlags.Public | BindingFlags.Instance);
+                // Call ResetDefaults method via reflection
+                var method = starDetectionOptions.GetType().GetMethod("ResetDefaults", BindingFlags.Public | BindingFlags.Instance);
                 if (method != null) {
                     method.Invoke(starDetectionOptions, null);
                     return true;
                 }
 
-                Logger.Error("ResetToDefaults method not found");
+                Logger.Error("ResetDefaults method not found");
                 return false;
             } catch (Exception ex) {
                 Logger.Error($"Error resetting star detection options: {ex}");
