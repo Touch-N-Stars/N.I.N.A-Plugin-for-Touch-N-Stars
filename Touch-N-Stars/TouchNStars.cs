@@ -15,8 +15,11 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.Composition;
+using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.Text;
 using TouchNStars.Utility;
@@ -70,6 +73,10 @@ namespace TouchNStars {
     public class TouchNStars : PluginBase, INotifyPropertyChanged {
         private const string MdnsServiceType = "_touchnstars._tcp.";
         private const string MdnsInstancePrefix = "touchnstars_";
+
+        // Machines sharing a hostname (e.g. identical Pi images) would otherwise advertise
+        // colliding mDNS instance/host names, hiding all but one instance from discovery.
+        private static readonly Lazy<string> mdnsMachineId = new(ComputeMdnsMachineId);
 
         private TouchNStarsServer server;
         private MdnsBroadcaster mdnsBroadcaster;
@@ -320,8 +327,18 @@ namespace TouchNStars {
             }
 
             try {
+                IPAddress address = ResolveMdnsAddress();
+                var txtProperties = new Dictionary<string, string> {
+                    ["instanceName"] = BuildMdnsDisplayName(),
+                    ["instanceId"] = mdnsMachineId.Value,
+                    ["port"] = CachedPort.ToString()
+                };
+                if (address != null) {
+                    txtProperties["ip"] = address.ToString();
+                }
+
                 mdnsBroadcaster ??= new MdnsBroadcaster(MdnsServiceType);
-                mdnsBroadcaster.StartOrUpdate(MdnsServiceInstance, CachedPort, ResolveMdnsAddress());
+                mdnsBroadcaster.StartOrUpdate(MdnsServiceInstance, CachedPort, address, txtProperties);
             } catch (Exception ex) {
                 Logger.Error($"Failed to advertise Touch 'N' Stars via mDNS: {ex}");
             }
@@ -336,6 +353,10 @@ namespace TouchNStars {
         }
 
         private string BuildMdnsInstanceName() {
+            return $"{MdnsInstancePrefix}{BuildMdnsDisplayName()}-{mdnsMachineId.Value}";
+        }
+
+        private string BuildMdnsDisplayName() {
             string suffix = SanitizeInstanceSuffix(GetInstanceNameOrDefault());
 
             if (!HasCustomInstanceName()) {
@@ -345,7 +366,28 @@ namespace TouchNStars {
                 }
             }
 
-            return $"{MdnsInstancePrefix}{suffix}";
+            return suffix;
+        }
+
+        private static string ComputeMdnsMachineId() {
+            try {
+                var macs = NetworkInterface.GetAllNetworkInterfaces()
+                    .Where(nic => nic.NetworkInterfaceType is not NetworkInterfaceType.Loopback and not NetworkInterfaceType.Tunnel)
+                    .Select(nic => nic.GetPhysicalAddress()?.ToString())
+                    .Where(mac => !string.IsNullOrEmpty(mac))
+                    .Distinct()
+                    .OrderBy(mac => mac, StringComparer.Ordinal)
+                    .ToList();
+
+                if (macs.Count > 0) {
+                    byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", macs)));
+                    return Convert.ToHexString(hash.AsSpan(0, 3)).ToLowerInvariant();
+                }
+            } catch (Exception ex) {
+                Logger.Debug($"Failed to derive mDNS machine id from network interfaces: {ex.Message}");
+            }
+
+            return Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         private string GetInstanceNameOrDefault() {
