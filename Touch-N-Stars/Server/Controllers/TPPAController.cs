@@ -26,11 +26,10 @@ public class TPPAController : WebApiController
     }
 
     /// <summary>
-    /// Gets the live PolarAlignment instruction instance from DockablePolarAlignmentVM
-    /// by accessing the MessageBroker's subscriber list for the start-alignment topic.
-    /// This is the same object WPF binds to for TargetDistance, MoveRate etc.
+    /// Gets the live DockablePolarAlignmentVM instance by accessing the MessageBroker's
+    /// subscriber list for the start-alignment topic. This is the same object WPF binds to.
     /// </summary>
-    private object GetPolarAlignmentInstruction()
+    private object GetPolarAlignmentVMInstance()
     {
         try
         {
@@ -69,20 +68,9 @@ public class TPPAController : WebApiController
             foreach (var subscriber in list)
             {
                 if (subscriber == null) continue;
-                var subType = subscriber.GetType();
-                if (subType.Name == "DockablePolarAlignmentVM")
+                if (subscriber.GetType().Name == "DockablePolarAlignmentVM")
                 {
-                    // Get its PolarAlignment instruction property
-                    var paProp = subType.GetProperty("PolarAlignment",
-                        BindingFlags.Public | BindingFlags.Instance);
-                    if (paProp == null)
-                    {
-                        Logger.Warning("PolarAlignment property not found on DockablePolarAlignmentVM");
-                        return null;
-                    }
-                    var pa = paProp.GetValue(subscriber);
-                    Logger.Info($"GetPolarAlignmentInstruction: Found PolarAlignment instance: {(pa != null ? pa.GetType().Name : "null")}");
-                    return pa;
+                    return subscriber;
                 }
             }
 
@@ -91,8 +79,73 @@ public class TPPAController : WebApiController
         }
         catch (Exception ex)
         {
-            Logger.Error($"Error in GetPolarAlignmentInstruction: {ex.Message}", ex);
+            Logger.Error($"Error in GetPolarAlignmentVMInstance: {ex.Message}", ex);
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets the live PolarAlignment instruction instance from DockablePolarAlignmentVM.
+    /// This is the same object WPF binds to for TargetDistance, MoveRate etc.
+    /// </summary>
+    private object GetPolarAlignmentInstruction()
+    {
+        var vm = GetPolarAlignmentVMInstance();
+        if (vm == null) return null;
+
+        var paProp = vm.GetType().GetProperty("PolarAlignment", BindingFlags.Public | BindingFlags.Instance);
+        if (paProp == null)
+        {
+            Logger.Warning("PolarAlignment property not found on DockablePolarAlignmentVM");
+            return null;
+        }
+
+        var pa = paProp.GetValue(vm);
+        Logger.Info($"GetPolarAlignmentInstruction: Found PolarAlignment instance: {(pa != null ? pa.GetType().Name : "null")}");
+        return pa;
+    }
+
+    /// <summary>
+    /// Gets whether TPPA is currently running, read directly from the live
+    /// DockablePolarAlignmentVM.IsRunning, regardless of what triggered the run
+    /// (this API, the NINA UI, or a sequence).
+    /// GET /tppa/info
+    /// </summary>
+    [Route(HttpVerbs.Get, "/tppa/info")]
+    public object GetTPPAInfo()
+    {
+        try
+        {
+            var vm = GetPolarAlignmentVMInstance();
+            if (vm == null)
+            {
+                HttpContext.Response.StatusCode = 503;
+                return new Dictionary<string, object>()
+                {
+                    { "Success", false },
+                    { "Error", "PolarAlignment plugin not loaded" }
+                };
+            }
+
+            var isRunningProp = vm.GetType().GetProperty("IsRunning", BindingFlags.Public | BindingFlags.Instance);
+            var isRunning = isRunningProp != null && (bool)(isRunningProp.GetValue(vm) ?? false);
+
+            HttpContext.Response.StatusCode = 200;
+            return new Dictionary<string, object>()
+            {
+                { "Success", true },
+                { "IsRunning", isRunning }
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex);
+            HttpContext.Response.StatusCode = 500;
+            return new Dictionary<string, object>()
+            {
+                { "Success", false },
+                { "Error", $"Failed to fetch TPPA info: {ex.Message}" }
+            };
         }
     }
 
