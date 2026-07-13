@@ -44,7 +44,8 @@ namespace TouchNStars {
         IFilterWheelMediator filterWheel,
         IFlatDeviceMediator flatDevice,
         ITwilightCalculator twilightCalculator,
-        ISymbolBroker symbolBroker) {
+        ISymbolBroker symbolBroker,
+        IFocuserMediator focuser) {
 
         public readonly IDeepSkyObjectSearchVM DeepSkyObjectSearchVM = DeepSkyObjectSearchVM;
         public readonly IImageDataFactory ImageDataFactory = ImageDataFactory;
@@ -62,6 +63,7 @@ namespace TouchNStars {
         public readonly IFlatDeviceMediator FlatDevice = flatDevice;
         public readonly ITwilightCalculator TwilightCalculator = twilightCalculator;
         public readonly ISymbolBroker SymbolBroker = symbolBroker;
+        public readonly IFocuserMediator Focuser = focuser;
     }
 
     [Export(typeof(IPluginManifest))]
@@ -96,7 +98,8 @@ namespace TouchNStars {
                     IFilterWheelMediator filterWheelMediator,
                     IFlatDeviceMediator flatDeviceMediator,
                     ITwilightCalculator twilightCalculator,
-                    ISymbolBroker symbolBroker) {
+                    ISymbolBroker symbolBroker,
+                    IFocuserMediator focuserMediator) {
             if (Settings.Default.UpdateSettings) {
                 Settings.Default.Upgrade();
                 Settings.Default.UpdateSettings = false;
@@ -121,7 +124,8 @@ namespace TouchNStars {
                             filterWheelMediator,
                             flatDeviceMediator,
                             twilightCalculator,
-                            symbolBroker);
+                            symbolBroker,
+                            focuserMediator);
 
             UpdateDefaultPortCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(() => {
                 Port = CachedPort;

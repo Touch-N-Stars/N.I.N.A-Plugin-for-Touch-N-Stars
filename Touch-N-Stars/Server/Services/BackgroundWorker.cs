@@ -21,9 +21,22 @@ internal static class BackgroundWorker {
             watcher = new FileSystemWatcher(CoreUtility.LogPath, Path.GetFileName(currentLogFile));
             watcher.EnableRaisingEvents = true;  // Enable the watcher
             watcher.Changed += OnLogFileChanged;
+            watcher.Error += OnLogWatcherError;
         } catch (Exception ex) {
             Logger.Error($"Failed to start log monitoring: {ex.Message}");
         }
+    }
+
+    private static void OnLogWatcherError(object sender, ErrorEventArgs e) {
+        Logger.Error($"Log FileSystemWatcher failed, restarting: {e.GetException()?.Message}");
+        if (watcher != null) {
+            watcher.EnableRaisingEvents = false;
+            watcher.Changed -= OnLogFileChanged;
+            watcher.Error -= OnLogWatcherError;
+            watcher.Dispose();
+            watcher = null;
+        }
+        MonitorLogForEvents();
     }
 
     private static void OnLogFileChanged(object sender, FileSystemEventArgs e) {
@@ -55,6 +68,7 @@ internal static class BackgroundWorker {
         if (watcher != null) {
             watcher.EnableRaisingEvents = false;
             watcher.Changed -= OnLogFileChanged;
+            watcher.Error -= OnLogWatcherError;
             watcher.Dispose();
             watcher = null;
         }
@@ -62,6 +76,7 @@ internal static class BackgroundWorker {
         if (afWatcher != null) {
             afWatcher.EnableRaisingEvents = false;
             afWatcher.Changed -= OnAFFileChanged;
+            afWatcher.Error -= OnAfWatcherError;
             afWatcher.Dispose();
             afWatcher = null;
         }
@@ -72,14 +87,31 @@ internal static class BackgroundWorker {
             return;
         }
 
-        if (!Directory.Exists(CoreUtility.AfPath)) {
-            Logger.Error($"AF-Verzeichnis existiert nicht: {CoreUtility.AfPath}");
-            return;
-        }
+        try {
+            if (!Directory.Exists(CoreUtility.AfPath)) {
+                Logger.Info($"AF-Verzeichnis existiert nicht, wird erstellt: {CoreUtility.AfPath}");
+                Directory.CreateDirectory(CoreUtility.AfPath);
+            }
 
-        afWatcher = new FileSystemWatcher(CoreUtility.AfPath);
-        afWatcher.EnableRaisingEvents = true;
-        afWatcher.Created += OnAFFileChanged;
+            afWatcher = new FileSystemWatcher(CoreUtility.AfPath);
+            afWatcher.EnableRaisingEvents = true;
+            afWatcher.Created += OnAFFileChanged;
+            afWatcher.Error += OnAfWatcherError;
+        } catch (Exception ex) {
+            Logger.Error($"Failed to start AF report monitoring: {ex.Message}");
+        }
+    }
+
+    private static void OnAfWatcherError(object sender, ErrorEventArgs e) {
+        Logger.Error($"AF FileSystemWatcher failed, restarting: {e.GetException()?.Message}");
+        if (afWatcher != null) {
+            afWatcher.EnableRaisingEvents = false;
+            afWatcher.Created -= OnAFFileChanged;
+            afWatcher.Error -= OnAfWatcherError;
+            afWatcher.Dispose();
+            afWatcher = null;
+        }
+        MonitorLastAF();
     }
 
     private static void OnAFFileChanged(object sender, FileSystemEventArgs e) {
