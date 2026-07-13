@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using Makaretu.Dns;
 using NINA.Core.Utility;
@@ -23,7 +24,7 @@ internal sealed class MdnsBroadcaster : IDisposable
         this.serviceType = serviceType ?? throw new ArgumentNullException(nameof(serviceType));
     }
 
-    public void StartOrUpdate(string instanceName, int port, IPAddress address)
+    public void StartOrUpdate(string instanceName, int port, IPAddress address, IReadOnlyDictionary<string, string> txtProperties = null)
     {
         if (string.IsNullOrWhiteSpace(instanceName))
         {
@@ -39,7 +40,18 @@ internal sealed class MdnsBroadcaster : IDisposable
         {
             EnsureStarted();
             var addresses = address != null ? new[] { address } : null;
-            UpdateAdvertisement(new ServiceProfile(instanceName, serviceType, (ushort)port, addresses));
+            var profile = new ServiceProfile(instanceName, serviceType, (ushort)port, addresses);
+            if (txtProperties != null)
+            {
+                foreach (var pair in txtProperties)
+                {
+                    if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrEmpty(pair.Value))
+                    {
+                        profile.AddProperty(pair.Key, pair.Value);
+                    }
+                }
+            }
+            UpdateAdvertisement(profile);
         }
     }
 
