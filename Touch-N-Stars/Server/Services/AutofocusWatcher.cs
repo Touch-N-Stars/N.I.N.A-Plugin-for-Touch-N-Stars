@@ -27,7 +27,10 @@ internal class AutofocusWatcher : IFocuserConsumer {
     }
 
     public void AutoFocusRunStarting() {
-        DataContainer.afRun = true;
+        lock (DataContainer.lockObj) {
+            DataContainer.afRun = true;
+            DataContainer.afStartConfirmed = true;
+        }
     }
 
     public void UpdateEndAutoFocusRun(AutoFocusInfo info) {

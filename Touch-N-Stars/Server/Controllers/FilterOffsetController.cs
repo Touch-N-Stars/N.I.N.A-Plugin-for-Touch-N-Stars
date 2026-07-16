@@ -407,15 +407,15 @@ public class FilterOffsetController : WebApiController
                 foreach (var f in profile.FilterWheelSettings.FilterWheelFilters)
                     f.AutoFocusFilter = false;
 
-                // Reset AF tracking state and start AF (ninaAPI call is async: returns "started" immediately)
-                lock (DataContainer.lockObj)
-                {
-                    DataContainer.afRun = true;
-                    DataContainer.afError = false;
-                    DataContainer.newAfGraph = false;
-                }
-
-                await client.GetAsync($"{apiUrl}/equipment/focuser/auto-focus", token);
+                // Trigger AF and confirm it actually started.
+                // HocusFocus signals "done" (mediator broadcast + AF report file) before its post-run
+                // cleanup (filter/temp-comp restore, guiding restart) releases the engine's in-progress
+                // guard, so a trigger fired right after the previous filter's AF can be silently
+                // rejected with "Another AutoFocus is already in progress". A rejected run never
+                // broadcasts AutoFocusRunStarting, so the absence of afStartConfirmed within the start
+                // window reliably identifies a trigger that did not take, and we re-trigger until the
+                // guard is free.
+                await StartAutofocusWithRetryAsync(apiUrl, client, filter.Name, token);
 
                 // Wait until the AF file watcher (BackgroundWorker) signals completion
                 await WaitForAutofocusAsync(token);
@@ -448,6 +448,58 @@ public class FilterOffsetController : WebApiController
         };
 
         _state = "PendingResult";
+    }
+
+    private static async Task StartAutofocusWithRetryAsync(string apiUrl, HttpClient client, string filterName, CancellationToken token)
+    {
+        // The previous run's post-AF cleanup steps each time out after 1 minute (filter restore,
+        // temp-comp restore, guiding restart), so allow up to 3 minutes of re-triggering before
+        // giving up with a clear error instead of hanging.
+        var deadline = DateTime.UtcNow.AddMinutes(3);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+
+            // Reset AF tracking state and start AF (ninaAPI call is async: returns "started" immediately)
+            lock (DataContainer.lockObj)
+            {
+                DataContainer.afRun = true;
+                DataContainer.afError = false;
+                DataContainer.afErrorText = string.Empty;
+                DataContainer.newAfGraph = false;
+                DataContainer.afStartConfirmed = false;
+            }
+
+            await client.GetAsync($"{apiUrl}/equipment/focuser/auto-focus", token);
+
+            if (await WaitForAutofocusStartAsync(token)) return;
+
+            if (DateTime.UtcNow >= deadline)
+                throw new Exception($"AutoFocus did not start for filter '{filterName}' after {attempt} attempts — a previous AutoFocus run may be stuck (see NINA log)");
+
+            Logger.Warning($"FilterOffset: AutoFocus for filter '{filterName}' did not start (attempt {attempt}, previous run likely still finishing) — retrying");
+            await Task.Delay(5000, token);
+        }
+    }
+
+    private static async Task<bool> WaitForAutofocusStartAsync(CancellationToken token)
+    {
+        // AutoFocusRunStarting is broadcast right after the AF run claims its in-progress guard,
+        // well before any exposures, so a healthy start confirms within a few seconds.
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            token.ThrowIfCancellationRequested();
+
+            lock (DataContainer.lockObj)
+            {
+                if (DataContainer.afStartConfirmed) return true;
+            }
+
+            await Task.Delay(500, token);
+        }
+        return false;
     }
 
     private static async Task WaitForAutofocusAsync(CancellationToken token)
