@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -392,14 +393,7 @@ public class FilterOffsetController : WebApiController
 
                 Logger.Info($"FilterOffset: loop {_currentLoop}/{loops} — switching to filter '{filter.Name}' (position {filter.Position})");
 
-                // Switch filter via mediator — avoids the collection-index lookup entirely.
-                // FilterWheelVM.ChangeFilter finds the target by Position value and waits until
-                // the wheel finishes moving, so no separate WaitForFilterWheelAsync is needed.
-                await TouchNStars.Mediators.FilterWheel.ChangeFilter(filter, token);
-
-                Logger.Info($"FilterOffset: running AutoFocus for filter '{filter.Name}'");
-
-                // Re-apply suppression immediately before each AF trigger.
+                // Re-apply suppression immediately before each filter's AF attempts.
                 // Something resets UseFilterWheelOffsets or AutoFocusFilter between iterations;
                 // keeping both false prevents HocusFocus's SetAutofocusFilter from switching
                 // the filter wheel away from the intended target during the AF run.
@@ -407,24 +401,7 @@ public class FilterOffsetController : WebApiController
                 foreach (var f in profile.FilterWheelSettings.FilterWheelFilters)
                     f.AutoFocusFilter = false;
 
-                // Trigger AF and confirm it actually started.
-                // HocusFocus signals "done" (mediator broadcast + AF report file) before its post-run
-                // cleanup (filter/temp-comp restore, guiding restart) releases the engine's in-progress
-                // guard, so a trigger fired right after the previous filter's AF can be silently
-                // rejected with "Another AutoFocus is already in progress". A rejected run never
-                // broadcasts AutoFocusRunStarting, so the absence of afStartConfirmed within the start
-                // window reliably identifies a trigger that did not take, and we re-trigger until the
-                // guard is free.
-                await StartAutofocusWithRetryAsync(apiUrl, client, filter.Name, token);
-
-                // Wait until the AF file watcher (BackgroundWorker) signals completion
-                await WaitForAutofocusAsync(token);
-
-                if (DataContainer.afError)
-                    throw new Exception($"AutoFocus failed for filter '{filter.Name}'");
-
-                // Read settled focus position
-                int position = await GetFocuserPositionAsync(apiUrl, client, token);
+                int position = await MeasureFilterFocusPositionAsync(filter, apiUrl, client, token);
                 Logger.Info($"FilterOffset: filter '{filter.Name}' settled at position {position}");
 
                 calculatedPositions[(int)filter.Position].Add(position);
@@ -450,7 +427,104 @@ public class FilterOffsetController : WebApiController
         _state = "PendingResult";
     }
 
-    private static async Task StartAutofocusWithRetryAsync(string apiUrl, HttpClient client, string filterName, CancellationToken token)
+    // Runs AF for one filter and returns its settled focuser position, guaranteeing the wheel was
+    // actually on the requested filter for the whole run — not just at the moment ChangeFilter was
+    // first called.
+    //
+    // The race this guards against: DataContainer.afRun (mirroring HocusFocus's "AF completed" broadcast)
+    // clears BEFORE HocusFocus's own post-run cleanup restores the filter that was active when THAT run
+    // started. Reacting to that early signal and switching to the next filter lets the still-in-flight
+    // cleanup silently move the wheel back afterward — right as the next AF trigger fires. That gets
+    // rejected ("Another AutoFocus is already in progress"), and once the retry succeeds, the wheel is
+    // sitting on the reverted (wrong) filter.
+    //
+    // The primary fix is WaitForHocusFocusCleanupAsync below: it doesn't let this method return — and so
+    // doesn't let the caller switch to the next filter — until HocusFocus's OWN in-progress guard
+    // (HocusFocusVM.AutoFocusInProgress) has cleared, which only happens after that filter-restore cleanup
+    // has actually finished. Re-asserting ChangeFilter before every trigger attempt (including retries),
+    // and verifying the actually-mounted filter right after completion, are kept as defense in depth for
+    // anything else (a manual AF from another client, etc.) that might still move the wheel mid-run.
+    private static async Task<int> MeasureFilterFocusPositionAsync(FilterInfo filter, string apiUrl, HttpClient client, CancellationToken token)
+    {
+        const int maxVerificationAttempts = 3;
+
+        for (var verificationAttempt = 1; ; verificationAttempt++)
+        {
+            token.ThrowIfCancellationRequested();
+
+            await StartAutofocusWithRetryAsync(apiUrl, client, filter, token);
+
+            // Wait until the AF file watcher (BackgroundWorker) signals completion
+            await WaitForAutofocusAsync(token);
+
+            if (DataContainer.afError)
+                throw new Exception($"AutoFocus failed for filter '{filter.Name}'");
+
+            // The just-completed run's own filter-restore cleanup hasn't fired yet at this point (it only
+            // runs after the completion signal we just waited on), so the wheel still reflects whatever
+            // filter the run actually measured through.
+            var actualFilter = TouchNStars.Mediators.FilterWheel.GetInfo()?.SelectedFilter;
+            if (actualFilter != null && actualFilter.Position != filter.Position)
+            {
+                if (verificationAttempt >= maxVerificationAttempts)
+                    throw new Exception($"FilterOffset: AutoFocus for filter '{filter.Name}' kept measuring through filter '{actualFilter.Name}' instead after {verificationAttempt} attempts");
+
+                Logger.Warning($"FilterOffset: AutoFocus for filter '{filter.Name}' actually ran through filter '{actualFilter.Name}' (race with previous run's cleanup) — discarding result and re-measuring (attempt {verificationAttempt})");
+                await TouchNStars.Mediators.FilterWheel.ChangeFilter(filter, token);
+                continue;
+            }
+
+            int position = await GetFocuserPositionAsync(apiUrl, client, token);
+
+            // Don't return — and so don't let the caller switch to the next filter — until HocusFocus has
+            // actually finished tearing this run down (filter restored, guard released). This is what
+            // prevents the race from happening in the first place, rather than just detecting it above.
+            await WaitForHocusFocusCleanupAsync(token);
+
+            return position;
+        }
+    }
+
+    // Reflects into HocusFocus's own in-progress guard (HocusFocusVM.Current.AutoFocusInProgress), which —
+    // unlike DataContainer.afRun — only clears in the finally block of HocusFocusVM.StartAutoFocus, i.e.
+    // after "await autoFocusEngine.Run(...)" has fully returned, including AutoFocusEngine.RunImpl's own
+    // outer finally (PerformPostAutoFocusActions' filter restore, then ReleaseAutoFocusInProgress). That
+    // makes it the one externally-observable signal that means "safe to switch to the next filter now".
+    // Returns null (and doesn't block) if HocusFocus isn't loaded or the property can't be read, so this
+    // degrades gracefully rather than hanging the calibration on an unrelated AF backend.
+    private static bool? IsHocusFocusAutoFocusInProgress()
+    {
+        try
+        {
+            var hocusFocusVMType = Type.GetType("NINA.Joko.Plugins.HocusFocus.AutoFocus.HocusFocusVM, NINA.Joko.Plugins.HocusFocus");
+            var currentVM = hocusFocusVMType?.GetProperty("Current", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            return currentVM?.GetType().GetProperty("AutoFocusInProgress")?.GetValue(currentVM) as bool?;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"FilterOffset: could not read HocusFocus AutoFocusInProgress via reflection: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static async Task WaitForHocusFocusCleanupAsync(CancellationToken token)
+    {
+        // PerformPostAutoFocusActions' individual steps (filter restore, temp-comp restore, guiding
+        // restart) each allow up to 1 minute, so give this generous headroom before giving up.
+        var deadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < deadline)
+        {
+            token.ThrowIfCancellationRequested();
+
+            if (IsHocusFocusAutoFocusInProgress() != true) return; // false (torn down) or null (unavailable) — either way, don't block
+
+            await Task.Delay(250, token);
+        }
+
+        Logger.Warning("FilterOffset: HocusFocus AutoFocus cleanup did not clear within 90s — proceeding anyway");
+    }
+
+    private static async Task StartAutofocusWithRetryAsync(string apiUrl, HttpClient client, FilterInfo filter, CancellationToken token)
     {
         // The previous run's post-AF cleanup steps each time out after 1 minute (filter restore,
         // temp-comp restore, guiding restart), so allow up to 3 minutes of re-triggering before
@@ -460,6 +534,12 @@ public class FilterOffsetController : WebApiController
         for (var attempt = 1; ; attempt++)
         {
             token.ThrowIfCancellationRequested();
+
+            // Re-assert the target filter right before every trigger attempt, including retries — a
+            // previous run's delayed cleanup can revert the wheel between attempts (see
+            // MeasureFilterFocusPositionAsync), and this is the last write before AF captures "current
+            // filter" as the run's imaging filter.
+            await TouchNStars.Mediators.FilterWheel.ChangeFilter(filter, token);
 
             // Reset AF tracking state and start AF (ninaAPI call is async: returns "started" immediately)
             lock (DataContainer.lockObj)
@@ -476,9 +556,9 @@ public class FilterOffsetController : WebApiController
             if (await WaitForAutofocusStartAsync(token)) return;
 
             if (DateTime.UtcNow >= deadline)
-                throw new Exception($"AutoFocus did not start for filter '{filterName}' after {attempt} attempts — a previous AutoFocus run may be stuck (see NINA log)");
+                throw new Exception($"AutoFocus did not start for filter '{filter.Name}' after {attempt} attempts — a previous AutoFocus run may be stuck (see NINA log)");
 
-            Logger.Warning($"FilterOffset: AutoFocus for filter '{filterName}' did not start (attempt {attempt}, previous run likely still finishing) — retrying");
+            Logger.Warning($"FilterOffset: AutoFocus for filter '{filter.Name}' did not start (attempt {attempt}, previous run likely still finishing) — retrying");
             await Task.Delay(5000, token);
         }
     }
