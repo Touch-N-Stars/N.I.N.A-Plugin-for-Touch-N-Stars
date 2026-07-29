@@ -1,6 +1,7 @@
 # Stellarium Landscape Creation Endpoint
 
-This document describes the backend endpoint used to generate a Stellarium Web landscape package from a 360 equirectangular panorama.
+This document describes the compatibility endpoint used to generate a Celestia
+Atlas HiPS landscape package from a 360 equirectangular panorama.
 
 ## Endpoint
 
@@ -8,6 +9,13 @@ This document describes the backend endpoint used to generate a Stellarium Web l
 - Path: `/api/stellarium/landscape/create`
 - Content type: `multipart/form-data`
 - Response content type: `application/zip`
+
+The historical `/api/stellarium/...` route remains stable for existing clients.
+Generated landscapes are stored outside the replaceable plugin directory under
+the user's N.I.N.A. local-data tree and served at
+`/celestia-atlas-data/user-landscapes/<folderName>`. On first use, custom
+landscapes from `app/stellarium-data/landscapes` and non-shipped landscapes from
+`app/celestia-atlas-data/landscapes` are copied into persistent storage.
 
 ## Multipart Fields
 
