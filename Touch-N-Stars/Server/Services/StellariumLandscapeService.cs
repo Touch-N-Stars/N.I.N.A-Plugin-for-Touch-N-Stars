@@ -26,6 +26,7 @@ public class StellariumLandscapeService
     public const long MaxUploadBytes = 80 * 1024 * 1024;
     public const int MinimumImageWidth = 1024;
     public const int MinimumImageHeight = 512;
+    public const string UserLandscapesRoute = "/celestia-atlas-data/user-landscapes";
 
     private const double NorthOffsetDirectionSign = -1.0;
     private const double ExpectedAspectRatio = 2.0;
@@ -36,9 +37,13 @@ public class StellariumLandscapeService
     private static readonly bool FlipPanoramaHorizontally = true;
     private static readonly bool FlipPanoramaVertically = false;
     private const string FrontendAppFolderName = "app";
-    private const string StellariumDataFolderName = "stellarium-data";
+    private const string CelestiaAtlasDataFolderName = "celestia-atlas-data";
+    private const string LegacyStellariumDataFolderName = "stellarium-data";
     private const string LandscapesFolderName = "landscapes";
+    private const string PersistentDataFolderName = "Touch-N-Stars";
     private const string NormalizedPluginFolderName = "touchnstars";
+    private static readonly HashSet<string> ShippedLandscapeFolders =
+        new(StringComparer.OrdinalIgnoreCase) { "gray", "guereins" };
 
     private static readonly WebpEncoder TileEncoder = new()
     {
@@ -104,8 +109,9 @@ public class StellariumLandscapeService
 
             byte[] zipBytes = BuildLandscapeZip(sanitizedFolderName, properties, description, allskyBytes, tileBytes);
 
-            // Auto-install into frontend static data if a valid app path can be resolved.
-            string installPath = TryInstallLandscapeToFrontend(
+            // Store generated content outside the versioned plugin tree so an
+            // installer can replace app assets without deleting user landscapes.
+            string installPath = TryInstallLandscapeToPersistentStore(
                 sanitizedFolderName,
                 properties,
                 description,
@@ -136,7 +142,7 @@ public class StellariumLandscapeService
     {
         try
         {
-            string landscapesRoot = ResolveFrontendLandscapesRoot(createIfMissing: false);
+            string landscapesRoot = ResolvePersistentLandscapesRoot(createIfMissing: false);
             if (string.IsNullOrWhiteSpace(landscapesRoot) || !Directory.Exists(landscapesRoot))
             {
                 return Array.Empty<InstalledLandscapeInfo>();
@@ -164,7 +170,7 @@ public class StellariumLandscapeService
                 {
                     FolderName = folderName,
                     Title = title,
-                    ServiceUrl = $"/stellarium-data/landscapes/{folderName}",
+                    ServiceUrl = $"{UserLandscapesRoute}/{folderName}",
                     HasAllsky = File.Exists(allskyPath)
                 });
             }
@@ -283,7 +289,7 @@ public class StellariumLandscapeService
             "hips_tile_format = webp",
             "dataproduct_type = image",
             $"obs_title = {name}",
-            $"hips_service_url = /stellarium-data/landscapes/{folderName}",
+            $"hips_service_url = {UserLandscapesRoute}/{folderName}",
             $"hips_release_date = {releaseDate}",
             $"source_md5 = {sourceMd5}",
             "type = landscape",
@@ -510,7 +516,7 @@ public class StellariumLandscapeService
         stream.Write(data, 0, data.Length);
     }
 
-    private static string TryInstallLandscapeToFrontend(
+    private static string TryInstallLandscapeToPersistentStore(
         string folderName,
         string propertiesContent,
         string descriptionContent,
@@ -519,7 +525,7 @@ public class StellariumLandscapeService
     {
         try
         {
-            string landscapesRoot = ResolveFrontendLandscapesRoot(createIfMissing: true);
+            string landscapesRoot = ResolvePersistentLandscapesRoot(createIfMissing: true);
             if (string.IsNullOrWhiteSpace(landscapesRoot))
             {
                 return null;
@@ -561,18 +567,158 @@ public class StellariumLandscapeService
         }
     }
 
-    private static string ResolveFrontendLandscapesRoot(bool createIfMissing)
+    internal static string ResolvePersistentLandscapesRoot(bool createIfMissing)
     {
-        string configuredAppPath = Environment.GetEnvironmentVariable("TNS_FRONTEND_APP_PATH");
-        if (!string.IsNullOrWhiteSpace(configuredAppPath))
+        string configuredPath = Environment.GetEnvironmentVariable("TNS_LANDSCAPES_PATH");
+        string landscapesRoot;
+        if (!string.IsNullOrWhiteSpace(configuredPath))
         {
-            return EnsureLandscapesDirectory(configuredAppPath, createIfMissing);
+            landscapesRoot = Path.GetFullPath(configuredPath);
+        }
+        else
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            landscapesRoot = Path.Combine(
+                localAppData,
+                "NINA",
+                PersistentDataFolderName,
+                CelestiaAtlasDataFolderName,
+                LandscapesFolderName);
         }
 
-        string fromBaseDirectory = TryResolveFromBaseDirectory(AppContext.BaseDirectory, createIfMissing);
-        if (!string.IsNullOrWhiteSpace(fromBaseDirectory))
+        if (createIfMissing)
         {
-            return fromBaseDirectory;
+            Directory.CreateDirectory(landscapesRoot);
+            MigrateLegacyLandscapes(landscapesRoot);
+            return landscapesRoot;
+        }
+
+        return Directory.Exists(landscapesRoot) ? landscapesRoot : null;
+    }
+
+    private static void MigrateLegacyLandscapes(string persistentRoot)
+    {
+        foreach (string appFolder in FindFrontendAppFolders())
+        {
+            MigrateLegacyLandscapesFromAppFolder(appFolder, persistentRoot);
+        }
+    }
+
+    internal static int MigrateLegacyLandscapesFromAppFolder(string appFolder, string persistentRoot)
+    {
+        if (string.IsNullOrWhiteSpace(appFolder) ||
+            string.IsNullOrWhiteSpace(persistentRoot) ||
+            !Directory.Exists(appFolder))
+        {
+            return 0;
+        }
+
+        Directory.CreateDirectory(persistentRoot);
+        int migrated = 0;
+        string legacyRoot = Path.Combine(appFolder, LegacyStellariumDataFolderName, LandscapesFolderName);
+        string celestiaRoot = Path.Combine(appFolder, CelestiaAtlasDataFolderName, LandscapesFolderName);
+        migrated += CopyMissingLandscapeFolders(legacyRoot, persistentRoot, excludeShipped: false);
+        migrated += CopyMissingLandscapeFolders(celestiaRoot, persistentRoot, excludeShipped: true);
+        return migrated;
+    }
+
+    private static int CopyMissingLandscapeFolders(
+        string sourceRoot,
+        string persistentRoot,
+        bool excludeShipped)
+    {
+        if (!Directory.Exists(sourceRoot))
+        {
+            return 0;
+        }
+
+        int migrated = 0;
+        foreach (string sourceFolder in Directory.GetDirectories(sourceRoot))
+        {
+            string folderName = Path.GetFileName(sourceFolder);
+            if (string.IsNullOrWhiteSpace(folderName) ||
+                (excludeShipped && ShippedLandscapeFolders.Contains(folderName)))
+            {
+                continue;
+            }
+
+            string targetFolder = Path.Combine(persistentRoot, folderName);
+            if (Directory.Exists(targetFolder))
+            {
+                continue;
+            }
+
+            string temporaryFolder = $"{targetFolder}.migrating-{Guid.NewGuid():N}";
+            try
+            {
+                CopyDirectory(sourceFolder, temporaryFolder);
+                if (Directory.Exists(targetFolder))
+                {
+                    Directory.Delete(temporaryFolder, recursive: true);
+                    continue;
+                }
+
+                Directory.Move(temporaryFolder, targetFolder);
+                migrated++;
+                Logger.Info(
+                    $"[StellariumLandscapeService] Migrated landscape '{folderName}' to persistent storage.");
+            }
+            catch (Exception ex)
+            {
+                if (Directory.Exists(temporaryFolder))
+                {
+                    try
+                    {
+                        Directory.Delete(temporaryFolder, recursive: true);
+                    }
+                    catch
+                    {
+                        // A stale migration directory is harmless and is never
+                        // considered an installed landscape.
+                    }
+                }
+
+                Logger.Warning(
+                    $"[StellariumLandscapeService] Could not migrate landscape '{folderName}': {ex.Message}");
+            }
+        }
+
+        return migrated;
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (string file in Directory.GetFiles(source))
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: false);
+        }
+
+        foreach (string directory in Directory.GetDirectories(source))
+        {
+            CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+    }
+
+    private static IEnumerable<string> FindFrontendAppFolders()
+    {
+        HashSet<string> results = new(StringComparer.OrdinalIgnoreCase);
+        string configuredAppPath = Environment.GetEnvironmentVariable("TNS_FRONTEND_APP_PATH");
+        if (!string.IsNullOrWhiteSpace(configuredAppPath) && Directory.Exists(configuredAppPath))
+        {
+            results.Add(Path.GetFullPath(configuredAppPath));
+        }
+
+        DirectoryInfo current = new(AppContext.BaseDirectory);
+        for (int i = 0; i < 6 && current != null; i++)
+        {
+            string candidateApp = Path.Combine(current.FullName, FrontendAppFolderName);
+            if (Directory.Exists(candidateApp))
+            {
+                results.Add(candidateApp);
+            }
+
+            current = current.Parent;
         }
 
         string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -583,8 +729,7 @@ public class StellariumLandscapeService
             {
                 foreach (string pluginFolder in Directory.GetDirectories(versionFolder))
                 {
-                    string pluginFolderName = Path.GetFileName(pluginFolder);
-                    if (!IsTouchNStarsPluginFolder(pluginFolderName))
+                    if (!IsTouchNStarsPluginFolder(Path.GetFileName(pluginFolder)))
                     {
                         continue;
                     }
@@ -592,53 +737,13 @@ public class StellariumLandscapeService
                     string appFolder = Path.Combine(pluginFolder, FrontendAppFolderName);
                     if (Directory.Exists(appFolder))
                     {
-                        return EnsureLandscapesDirectory(appFolder, createIfMissing);
+                        results.Add(appFolder);
                     }
                 }
             }
         }
 
-        return null;
-    }
-
-    private static string TryResolveFromBaseDirectory(string baseDirectory, bool createIfMissing)
-    {
-        if (string.IsNullOrWhiteSpace(baseDirectory))
-        {
-            return null;
-        }
-
-        DirectoryInfo current = new(baseDirectory);
-        for (int i = 0; i < 6 && current != null; i++)
-        {
-            string candidateApp = Path.Combine(current.FullName, FrontendAppFolderName);
-            if (Directory.Exists(candidateApp))
-            {
-                return EnsureLandscapesDirectory(candidateApp, createIfMissing);
-            }
-
-            current = current.Parent;
-        }
-
-        return null;
-    }
-
-    private static string EnsureLandscapesDirectory(string appFolder, bool createIfMissing)
-    {
-        string landscapesPath = Path.Combine(appFolder, StellariumDataFolderName, LandscapesFolderName);
-
-        if (createIfMissing)
-        {
-            Directory.CreateDirectory(landscapesPath);
-            return landscapesPath;
-        }
-
-        if (!Directory.Exists(landscapesPath))
-        {
-            return null;
-        }
-
-        return landscapesPath;
+        return results;
     }
 
     private static bool IsTouchNStarsPluginFolder(string folderName)
