@@ -36,7 +36,9 @@ public class StellariumLandscapeServiceTests
         Assert.Contains("hips_tile_format = webp", properties);
         Assert.Contains("dataproduct_type = image", properties);
         Assert.Contains("obs_title = My Backyard", properties);
-        Assert.Contains("hips_service_url = /stellarium-data/landscapes/my_backyard", properties);
+        Assert.Contains(
+            "hips_service_url = /celestia-atlas-data/user-landscapes/my_backyard",
+            properties);
         Assert.Contains("hips_release_date = 2026-06-01T12:30:00Z", properties);
         Assert.Contains("source_md5 = 0123456789abcdef0123456789abcdef", properties);
         Assert.Contains("type = landscape", properties);
@@ -95,6 +97,47 @@ public class StellariumLandscapeServiceTests
         bool isValid = StellariumLandscapeService.IsValidEquirectangularRatio(width, height);
 
         Assert.False(isValid);
+    }
+
+    [Fact]
+    public void MigrateLegacyLandscapes_PreservesCustomContentWithoutOverwritingPersistentCopy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"tns-landscape-test-{Guid.NewGuid():N}");
+        string app = Path.Combine(root, "app");
+        string legacy = Path.Combine(app, "stellarium-data", "landscapes", "my_backyard");
+        string shipped = Path.Combine(app, "celestia-atlas-data", "landscapes", "guereins");
+        string persistent = Path.Combine(root, "persistent");
+
+        try
+        {
+            Directory.CreateDirectory(legacy);
+            Directory.CreateDirectory(shipped);
+            File.WriteAllText(Path.Combine(legacy, "properties"), "legacy");
+            File.WriteAllText(Path.Combine(shipped, "properties"), "shipped");
+
+            Assert.Equal(
+                1,
+                StellariumLandscapeService.MigrateLegacyLandscapesFromAppFolder(app, persistent));
+            Assert.Equal(
+                "legacy",
+                File.ReadAllText(Path.Combine(persistent, "my_backyard", "properties")));
+            Assert.False(Directory.Exists(Path.Combine(persistent, "guereins")));
+
+            File.WriteAllText(Path.Combine(legacy, "properties"), "installer replacement");
+            Assert.Equal(
+                0,
+                StellariumLandscapeService.MigrateLegacyLandscapesFromAppFolder(app, persistent));
+            Assert.Equal(
+                "legacy",
+                File.ReadAllText(Path.Combine(persistent, "my_backyard", "properties")));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     private static byte[] CreateBytes(int length)

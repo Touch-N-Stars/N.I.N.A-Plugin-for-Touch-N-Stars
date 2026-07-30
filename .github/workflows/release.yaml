@@ -36,6 +36,15 @@ jobs:
           cd ..
           mv external_repo/dist app
 
+      - name: Verify Celestia Atlas data
+        run: |
+          if (!(Test-Path "app/celestia-atlas-data")) {
+            throw "Touch-N-Stars build is missing app/celestia-atlas-data"
+          }
+          if (Test-Path "app/stellarium-data") {
+            throw "Legacy app/stellarium-data must not be packaged"
+          }
+
       - name: Get Assembly Version
         id: get_version
         run: |
