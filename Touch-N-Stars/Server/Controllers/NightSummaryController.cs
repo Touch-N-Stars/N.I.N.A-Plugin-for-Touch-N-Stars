@@ -17,12 +17,14 @@ namespace TouchNStars.Server.Controllers;
 
 /// <summary>
 /// API Controller for Night Summary plugin integration.
-/// Accesses the Night Summary plugin's database via reflection to avoid compile-time dependencies.
+/// Binds to the stable in-process facade <c>NINA.Plugin.NightSummary.Integration.NightSummaryApi</c>
+/// via reflection (avoids a compile-time dependency on the Night Summary plugin assembly, whose
+/// internal types are not part of any stability contract — the facade is).
 /// </summary>
 public class NightSummaryController : WebApiController
 {
     private static Assembly _nsAssembly;
-    private static Type _sessionDbType;
+    private static Type _apiType;
     private static readonly object _initLock = new object();
 
     private static Assembly GetNightSummaryAssembly()
@@ -37,28 +39,43 @@ public class NightSummaryController : WebApiController
         return _nsAssembly;
     }
 
-    private static Type GetSessionDatabaseType()
+    private static Type GetNightSummaryApiType()
     {
-        if (_sessionDbType != null) return _sessionDbType;
+        if (_apiType != null) return _apiType;
         lock (_initLock)
         {
-            if (_sessionDbType != null) return _sessionDbType;
+            if (_apiType != null) return _apiType;
             var asm = GetNightSummaryAssembly();
-            _sessionDbType = asm?.GetType("NINA.Plugin.NightSummary.Data.SessionDatabase");
+            _apiType = asm?.GetType("NINA.Plugin.NightSummary.Integration.NightSummaryApi");
         }
-        return _sessionDbType;
+        return _apiType;
     }
 
-    private static object CreateSessionDatabase()
+    /// <summary>
+    /// Invokes a public static method on the NightSummaryApi facade and returns its JSON string
+    /// result, or null if the facade type/method isn't present (plugin not loaded / too old).
+    /// </summary>
+    private static string InvokeApi(string methodName, params object[] args)
     {
-        var dbType = GetSessionDatabaseType();
-        if (dbType == null)
-            throw new InvalidOperationException("Night Summary plugin not loaded");
-        return Activator.CreateInstance(dbType);
+        var apiType = GetNightSummaryApiType();
+        var method = apiType?.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+        return (string)method?.Invoke(null, args);
+    }
+
+    private async Task SendJsonAsync(string json)
+    {
+        await HttpContext.SendStringAsync(json, "application/json", Encoding.UTF8);
+    }
+
+    private async Task SendErrorAsync(string message)
+    {
+        await SendJsonAsync(JsonSerializer.Serialize(new ApiResponse { Success = false, Error = message }));
     }
 
     /// <summary>
     /// Converts an object with public properties to a Dictionary for JSON serialization.
+    /// Only used by the Test* endpoints below, which still need the raw (unmasked) live
+    /// settings object to actually send a test notification.
     /// </summary>
     private static Dictionary<string, object> MapToDict(object obj)
     {
@@ -80,191 +97,178 @@ public class NightSummaryController : WebApiController
         catch { return fallback; }
     }
 
-    /// <summary>
-    /// Settings fields that must never be exposed in plaintext via the API (credentials/secrets).
-    /// GetSettings replaces them with a "&lt;Field&gt;Set" boolean; UpdateSettings treats them as
-    /// write-only (a blank incoming value keeps the currently stored value).
-    /// </summary>
-    private static readonly HashSet<string> SecretSettingsFields = new(StringComparer.Ordinal)
+    /// <summary>Reads a JsonElement-backed object's properties into a lookup for LINQ computation.</summary>
+    private static Dictionary<string, JsonElement> ToElementDict(JsonElement obj)
     {
-        "SmtpPassword", "DiscordWebhookUrl", "PushoverAppToken", "PushoverUserKey"
-    };
-
-    private static void MaskSecrets(Dictionary<string, object> dict)
-    {
-        foreach (var field in SecretSettingsFields)
-        {
-            if (dict.TryGetValue(field, out var raw))
-            {
-                dict.Remove(field);
-                dict[$"{field}Set"] = !string.IsNullOrEmpty(raw as string);
-            }
-        }
+        var dict = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        if (obj.ValueKind == JsonValueKind.Object)
+            foreach (var prop in obj.EnumerateObject())
+                dict[prop.Name] = prop.Value;
+        return dict;
     }
+
+    private static double GetD(Dictionary<string, JsonElement> d, string key) =>
+        d.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : 0;
+
+    private static bool GetBool(Dictionary<string, JsonElement> d, string key) =>
+        d.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.True;
+
+    private static string GetStr(Dictionary<string, JsonElement> d, string key) =>
+        d.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>GET /api/nightsummary/status — returns whether the Night Summary plugin is loaded.</summary>
     [Route(HttpVerbs.Get, "/nightsummary/status")]
-    public object GetNightSummaryStatus()
+    public async Task GetNightSummaryStatus()
     {
-        var assembly = GetNightSummaryAssembly();
-        return new
+        try
         {
-            Success = true,
-            Response = new
-            {
-                Installed = assembly != null,
-                Version = assembly?.GetName().Version?.ToString()
-            }
-        };
+            var json = await Task.Run(() => InvokeApi("Status"));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+            await SendJsonAsync(json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"NightSummaryController: GetNightSummaryStatus failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
+        }
     }
 
-    /// <summary>GET /api/nightsummary/sessions?limit=50 — list recent sessions (enriched with image/target counts).</summary>
+    /// <summary>GET /api/nightsummary/sessions?limit=50 — list recent sessions.</summary>
     [Route(HttpVerbs.Get, "/nightsummary/sessions")]
-    public async Task<object> GetSessions([QueryField] int limit = 50)
+    public async Task GetSessions([QueryField] int limit = 50)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                var db = CreateSessionDatabase();
-                var method = db.GetType().GetMethod("GetRecentSessions");
-                if (method == null)
-                    return (object)new ApiResponse { Success = false, Error = "GetRecentSessions not found on SessionDatabase" };
-
-                var result = method.Invoke(db, new object[] { limit });
-                var sessions = ((IList)result).Cast<object>().Select(MapToDict).ToList();
-
-                return new { Success = true, Response = sessions };
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"NightSummaryController: GetSessions failed: {ex.InnerException?.Message ?? ex.Message}");
-                return (object)new ApiResponse { Success = false, Error = ex.InnerException?.Message ?? ex.Message };
-            }
-        });
+            var json = await Task.Run(() => InvokeApi("Sessions", limit));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+            await SendJsonAsync(json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"NightSummaryController: GetSessions failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
+        }
     }
 
-    /// <summary>GET /api/nightsummary/sessions/{sessionId} — full session detail: session record, summary stats, images, events, timing events.</summary>
+    /// <summary>
+    /// GET /api/nightsummary/sessions/{sessionId} — full session detail: session record, summary
+    /// stats, per-target/filter breakdown, images, events, timing events, session history.
+    /// The facade's Session() call returns the raw building blocks (Session/Images/Events/
+    /// TimingEvents/SessionHistory); Stats/ByTarget/ReportAvailable are computed here from the
+    /// Images array, same as before the facade migration.
+    /// </summary>
     [Route(HttpVerbs.Get, "/nightsummary/sessions/{sessionId}")]
-    public async Task<object> GetSession(string sessionId)
+    public async Task GetSession(string sessionId)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var json = await Task.Run(() => InvokeApi("Session", sessionId));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("Success", out var successEl) || successEl.ValueKind != JsonValueKind.True)
             {
-                var db = CreateSessionDatabase();
-                var dbType = db.GetType();
+                await SendJsonAsync(json); // pass the facade's own error envelope through unchanged
+                return;
+            }
 
-                var getSession = dbType.GetMethod("GetSession");
-                var getImages = dbType.GetMethod("GetImagesForSession");
-                var getEvents = dbType.GetMethod("GetEventsForSession");
-                var getTimingEvents = dbType.GetMethod("GetTimingEventsForSession");
-                var getSessionHistory = dbType.GetMethod("GetSessionHistoryForTarget");
+            var response = root.GetProperty("Response");
+            var sessionEl = response.GetProperty("Session");
+            var imagesEl = response.TryGetProperty("Images", out var im) ? im : default;
+            var eventsEl = response.TryGetProperty("Events", out var ev) ? ev : default;
+            var timingEl = response.TryGetProperty("TimingEvents", out var te) ? te : default;
+            var historyEl = response.TryGetProperty("SessionHistory", out var sh) ? sh : default;
 
-                var session = getSession?.Invoke(db, new object[] { sessionId });
-                if (session == null)
-                    return (object)new ApiResponse { Success = false, Error = "Session not found" };
+            var images = imagesEl.ValueKind == JsonValueKind.Array
+                ? imagesEl.EnumerateArray().Select(ToElementDict).ToList()
+                : new List<Dictionary<string, JsonElement>>();
 
-                var images = ((IList)(getImages?.Invoke(db, new object[] { sessionId }) ?? new object[0])).Cast<object>().Select(MapToDict).ToList();
-                var events = ((IList)(getEvents?.Invoke(db, new object[] { sessionId }) ?? new object[0])).Cast<object>().Select(MapToDict).ToList();
-                var timingEvents = getTimingEvents != null
-                    ? ((IList)(getTimingEvents.Invoke(db, new object[] { sessionId }) ?? new object[0])).Cast<object>().Select(MapToDict).ToList()
-                    : new List<Dictionary<string, object>>();
+            var lightImages = images.Where(i => { var t = GetStr(i, "ImageType"); return string.IsNullOrEmpty(t) || t == "LIGHT"; }).ToList();
+            var acceptedImages = lightImages.Where(i => GetBool(i, "Accepted")).ToList();
 
-                // If the DB has no cached timing events, attempt a live log re-parse so the
-                // in-app session view can show the overhead analysis even for sessions where
-                // parsing failed (or hadn't run yet) at session-end time.
-                if (!timingEvents.Any())
+            double totalExpSec = lightImages.Sum(i => GetD(i, "ExposureDuration"));
+            var targets = lightImages
+                .Select(i => GetStr(i, "TargetName"))
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(t => t)
+                .ToList();
+
+            double avgHfr = acceptedImages.Any()
+                ? acceptedImages.Select(i => GetD(i, "HFR")).Where(h => h > 0).DefaultIfEmpty(0).Average()
+                : 0;
+            double avgGuiding = acceptedImages.Any()
+                ? acceptedImages.Select(i => GetD(i, "GuidingRMSTotal")).Where(g => g > 0).DefaultIfEmpty(0).Average()
+                : 0;
+            double avgFwhm = acceptedImages.Any()
+                ? acceptedImages.Select(i => GetD(i, "FWHM")).Where(f => f > 0).DefaultIfEmpty(0).Average()
+                : 0;
+
+            var byTarget = lightImages
+                .GroupBy(i => GetStr(i, "TargetName") ?? "")
+                .Select(g => new
                 {
-                    timingEvents = TryReparseAndCacheTimingEvents(db, dbType, session, sessionId, images.Count);
-                }
-
-                // Compute summary stats from LIGHT images only
-                var lightImages = images.Where(i => { var t = i.TryGetValue("ImageType", out var v) ? v?.ToString() : null; return string.IsNullOrEmpty(t) || t == "LIGHT"; }).ToList();
-                var acceptedImages = lightImages.Where(i => i.TryGetValue("Accepted", out var v) && v is bool b && b).ToList();
-
-                double totalExpSec = lightImages.Sum(i => GetVal<double>(i, "ExposureDuration"));
-                var targets = lightImages
-                    .Select(i => { i.TryGetValue("TargetName", out var v); return v?.ToString(); })
-                    .Where(t => !string.IsNullOrEmpty(t))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(t => t)
-                    .ToList();
-
-                double avgHfr = acceptedImages.Any()
-                    ? acceptedImages.Select(i => GetVal<double>(i, "HFR")).Where(h => h > 0).DefaultIfEmpty(0).Average()
-                    : 0;
-                double avgGuiding = acceptedImages.Any()
-                    ? acceptedImages.Select(i => GetVal<double>(i, "GuidingRMSTotal")).Where(g => g > 0).DefaultIfEmpty(0).Average()
-                    : 0;
-                double avgFwhm = acceptedImages.Any()
-                    ? acceptedImages.Select(i => GetVal<double>(i, "FWHM")).Where(f => f > 0).DefaultIfEmpty(0).Average()
-                    : 0;
-
-                // Per-target + per-filter breakdown
-                var byTarget = lightImages
-                    .GroupBy(i => { i.TryGetValue("TargetName", out var v); return v?.ToString() ?? ""; })
-                    .Select(g => new
-                    {
-                        Target = g.Key,
-                        ImageCount = g.Count(),
-                        AcceptedCount = g.Count(i => i.TryGetValue("Accepted", out var v) && v is bool b && b),
-                        TotalExposureSeconds = g.Sum(i => GetVal<double>(i, "ExposureDuration")),
-                        AvgHfr = Math.Round(g.Select(i => GetVal<double>(i, "HFR")).Where(h => h > 0).DefaultIfEmpty(0).Average(), 2),
-                        Filters = g
-                            .GroupBy(i => { i.TryGetValue("Filter", out var fv); return fv?.ToString() ?? ""; })
-                            .Select(fg => new
-                            {
-                                Filter = fg.Key,
-                                Count = fg.Count(),
-                                AcceptedCount = fg.Count(i => i.TryGetValue("Accepted", out var v) && v is bool b && b),
-                                TotalExposureSeconds = fg.Sum(i => GetVal<double>(i, "ExposureDuration"))
-                            })
-                            .OrderBy(f => f.Filter)
-                            .ToList()
-                    })
-                    .OrderBy(t => t.Target)
-                    .ToList();
-
-                return new
-                {
-                    Success = true,
-                    Response = new
-                    {
-                        Session = MapToDict(session),
-                        ReportAvailable = GetReportPath(sessionId) is string rp && File.Exists(rp),
-                        Stats = new
+                    Target = g.Key,
+                    ImageCount = g.Count(),
+                    AcceptedCount = g.Count(i => GetBool(i, "Accepted")),
+                    TotalExposureSeconds = g.Sum(i => GetD(i, "ExposureDuration")),
+                    AvgHfr = Math.Round(g.Select(i => GetD(i, "HFR")).Where(h => h > 0).DefaultIfEmpty(0).Average(), 2),
+                    Filters = g
+                        .GroupBy(i => GetStr(i, "Filter") ?? "")
+                        .Select(fg => new
                         {
-                            TotalImages = lightImages.Count,
-                            AcceptedImages = acceptedImages.Count,
-                            TotalExposureSeconds = Math.Round(totalExpSec, 1),
-                            Targets = targets,
-                            AvgHfr = Math.Round(avgHfr, 2),
-                            AvgGuidingRms = Math.Round(avgGuiding, 2),
-                            AvgFwhm = Math.Round(avgFwhm, 2),
-                            SkippedExposures = GetVal<int>(MapToDict(session), "SkippedExposures")
-                        },
-                        ByTarget = byTarget,
-                        Images = images,
-                        Events = events,
-                        TimingEvents = timingEvents,
-                        SessionHistory = getSessionHistory != null
-                            ? targets.ToDictionary(
-                                t => t,
-                                t => ((IList)(getSessionHistory.Invoke(db, new object[] { t, sessionId }) ?? new object[0]))
-                                     .Cast<object>().Select(MapToDict).ToList())
-                            : new Dictionary<string, List<Dictionary<string, object>>>()
-                    }
-                };
-            }
-            catch (Exception ex)
+                            Filter = fg.Key,
+                            Count = fg.Count(),
+                            AcceptedCount = fg.Count(i => GetBool(i, "Accepted")),
+                            TotalExposureSeconds = fg.Sum(i => GetD(i, "ExposureDuration"))
+                        })
+                        .OrderBy(f => f.Filter)
+                        .ToList()
+                })
+                .OrderBy(t => t.Target)
+                .ToList();
+
+            var sessionDict = ToElementDict(sessionEl);
+            int skippedExposures = sessionDict.TryGetValue("SkippedExposures", out var se) && se.ValueKind == JsonValueKind.Number
+                ? se.GetInt32()
+                : 0;
+
+            var result = new
             {
-                Logger.Error($"NightSummaryController: GetSession failed: {ex.InnerException?.Message ?? ex.Message}");
-                return (object)new ApiResponse { Success = false, Error = ex.InnerException?.Message ?? ex.Message };
-            }
-        });
+                Success = true,
+                Response = new
+                {
+                    Session = sessionEl,
+                    ReportAvailable = GetReportPath(sessionId) is string rp && File.Exists(rp),
+                    Stats = new
+                    {
+                        TotalImages = lightImages.Count,
+                        AcceptedImages = acceptedImages.Count,
+                        TotalExposureSeconds = Math.Round(totalExpSec, 1),
+                        Targets = targets,
+                        AvgHfr = Math.Round(avgHfr, 2),
+                        AvgGuidingRms = Math.Round(avgGuiding, 2),
+                        AvgFwhm = Math.Round(avgFwhm, 2),
+                        SkippedExposures = skippedExposures
+                    },
+                    ByTarget = byTarget,
+                    Images = imagesEl,
+                    Events = eventsEl,
+                    TimingEvents = timingEl,
+                    SessionHistory = historyEl
+                }
+            };
+
+            await SendJsonAsync(JsonSerializer.Serialize(result));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"NightSummaryController: GetSession failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
+        }
     }
 
     /// <summary>
@@ -272,6 +276,7 @@ public class NightSummaryController : WebApiController
     /// The report is written automatically for every session to
     /// %LOCALAPPDATA%\NINA\NightSummary\reports\{sessionId}.html (keyed by SessionId).
     /// Returns raw text/html (not a JSON ApiResponse) so it can be embedded in an iframe.
+    /// Reads the report directly off disk — not part of the NightSummaryApi facade surface.
     /// </summary>
     [Route(HttpVerbs.Get, "/nightsummary/sessions/{sessionId}/report")]
     public async Task GetSessionReport(string sessionId)
@@ -305,35 +310,28 @@ public class NightSummaryController : WebApiController
             : null;
     }
 
-    /// <summary>DELETE /api/nightsummary/sessions/{sessionId} — delete a session and all its records.</summary>
+    /// <summary>
+    /// DELETE /api/nightsummary/sessions/{sessionId} — delete a session and all its records.
+    /// Cleanup-aware via the facade: also removes the report HTML, settings sidecar, livestack
+    /// masters and thumbnails (the raw SessionDatabase.DeleteSession this used to call orphaned them).
+    /// </summary>
     [Route(HttpVerbs.Delete, "/nightsummary/sessions/{sessionId}")]
-    public async Task<object> DeleteSession(string sessionId)
+    public async Task DeleteSession(string sessionId)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                var db = CreateSessionDatabase();
-                var method = db.GetType().GetMethod("DeleteSession");
-                if (method == null)
-                    return (object)new ApiResponse { Success = false, Error = "DeleteSession not found on SessionDatabase" };
-
-                method.Invoke(db, new object[] { sessionId });
-                return new { Success = true, Response = "Session deleted" };
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"NightSummaryController: DeleteSession failed: {ex.InnerException?.Message ?? ex.Message}");
-                return (object)new ApiResponse { Success = false, Error = ex.InnerException?.Message ?? ex.Message };
-            }
-        });
+            var json = await Task.Run(() => InvokeApi("DeleteSession", sessionId));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+            await SendJsonAsync(json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"NightSummaryController: DeleteSession failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
+        }
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
-
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "NINA", "NightSummary", "settings.json");
+    // ─── Helpers (still needed by the Test* endpoints, which have no facade equivalent) ───────
 
     private static object GetSettingsManager()
     {
@@ -353,106 +351,66 @@ public class NightSummaryController : WebApiController
         return currentProp?.GetValue(manager);
     }
 
-    private static void SaveSettings()
-    {
-        var manager = GetSettingsManager();
-        if (manager == null) return;
-        var saveMethod = manager.GetType().GetMethod("Save", BindingFlags.Public | BindingFlags.Instance);
-        saveMethod?.Invoke(manager, null);
-    }
-
-    private static void SetProp(object obj, string name, object value)
-    {
-        var prop = obj.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-        if (prop == null || !prop.CanWrite) return;
-        try
-        {
-            var targetType = prop.PropertyType;
-            if (targetType == typeof(bool) && value is JsonElement je && je.ValueKind == JsonValueKind.True || value is JsonElement je2 && je2.ValueKind == JsonValueKind.False)
-                prop.SetValue(obj, value is JsonElement el ? el.GetBoolean() : Convert.ToBoolean(value));
-            else if (targetType == typeof(int))
-                prop.SetValue(obj, value is JsonElement ej ? ej.GetInt32() : Convert.ToInt32(value));
-            else if (targetType == typeof(bool))
-                prop.SetValue(obj, value is JsonElement ejb ? ejb.GetBoolean() : Convert.ToBoolean(value));
-            else if (targetType == typeof(string))
-                prop.SetValue(obj, value is JsonElement ejs ? ejs.GetString() : value?.ToString() ?? "");
-            else
-                prop.SetValue(obj, Convert.ChangeType(value, targetType));
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"NightSummaryController: SetProp {name} failed: {ex.Message}");
-        }
-    }
-
     // ─── Settings ─────────────────────────────────────────────────────────────
 
-    /// <summary>GET /api/nightsummary/settings — read all plugin settings.</summary>
+    /// <summary>
+    /// GET /api/nightsummary/settings — read plugin settings. The facade already masks the 5
+    /// secret fields (SmtpPassword, DiscordWebhookUrl, PushoverAppToken, PushoverUserKey,
+    /// DashboardApiKey) into "&lt;field&gt;Set" booleans; we only add the NINA-profile filter
+    /// name list, which the facade has no reason to know about.
+    /// </summary>
     [Route(HttpVerbs.Get, "/nightsummary/settings")]
-    public object GetSettings()
+    public async Task GetSettings()
     {
         try
         {
-            var settings = GetCurrentSettings();
-            if (settings == null)
-                return new ApiResponse { Success = false, Error = "Night Summary plugin not loaded" };
+            var json = await Task.Run(() => InvokeApi("GetSettings"));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
 
-            var dict = MapToDict(settings);
-            MaskSecrets(dict);
-            // Also build filter list from NINA profile
-            var filters = GetProfileFilterNames();
-            dict["_filterNames"] = filters;
-            return new { Success = true, Response = dict };
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("Success", out var successEl) || successEl.ValueKind != JsonValueKind.True)
+            {
+                await SendJsonAsync(json);
+                return;
+            }
+
+            var dict = new Dictionary<string, object>();
+            foreach (var prop in root.GetProperty("Response").EnumerateObject())
+                dict[prop.Name] = prop.Value;
+            dict["_filterNames"] = GetProfileFilterNames();
+
+            await SendJsonAsync(JsonSerializer.Serialize(new { Success = true, Response = dict }));
         }
         catch (Exception ex)
         {
-            Logger.Error($"NightSummaryController: GetSettings failed: {ex.Message}");
-            return new ApiResponse { Success = false, Error = ex.Message };
+            Logger.Error($"NightSummaryController: GetSettings failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
         }
     }
 
-    /// <summary>PUT /api/nightsummary/settings — update one or more settings fields.</summary>
+    /// <summary>
+    /// PUT /api/nightsummary/settings — update settings. The request body is forwarded verbatim
+    /// as the facade's patchJson; write-only secret semantics (blank keeps current value) and
+    /// persisting through SettingsManager are the facade's responsibility now.
+    /// </summary>
     [Route(HttpVerbs.Put, "/nightsummary/settings")]
-    public async Task<object> UpdateSettings()
+    public async Task UpdateSettings()
     {
-        return await Task.Run(async () =>
+        try
         {
-            try
-            {
-                var settings = GetCurrentSettings();
-                if (settings == null)
-                    return (object)new ApiResponse { Success = false, Error = "Night Summary plugin not loaded" };
+            var bodyStr = await ReadBodyStringAsync();
+            if (string.IsNullOrWhiteSpace(bodyStr)) { await SendErrorAsync("Invalid request body"); return; }
 
-                var bodyStr = await ReadBodyStringAsync();
-                if (string.IsNullOrWhiteSpace(bodyStr))
-                    return (object)new ApiResponse { Success = false, Error = "Invalid request body" };
-
-                var doc = JsonDocument.Parse(bodyStr);
-
-                foreach (var prop in doc.RootElement.EnumerateObject())
-                {
-                    // Secret fields are write-only: a blank value means "keep the current value",
-                    // so the client never has to round-trip a plaintext credential.
-                    if (SecretSettingsFields.Contains(prop.Name))
-                    {
-                        var incoming = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
-                        if (string.IsNullOrEmpty(incoming))
-                            continue;
-                    }
-
-                    var val = (object)prop.Value;
-                    SetProp(settings, prop.Name, val);
-                }
-
-                SaveSettings();
-                return new { Success = true, Response = "Settings saved" };
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"NightSummaryController: UpdateSettings failed: {ex.Message}");
-                return (object)new ApiResponse { Success = false, Error = ex.Message };
-            }
-        });
+            var json = await Task.Run(() => InvokeApi("UpdateSettings", bodyStr));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+            await SendJsonAsync(json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"NightSummaryController: UpdateSettings failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
+        }
     }
 
     private async Task<string> ReadBodyStringAsync()
@@ -480,7 +438,7 @@ public class NightSummaryController : WebApiController
         }
     }
 
-    // ─── Test notifications ───────────────────────────────────────────────────
+    // ─── Test notifications (no facade equivalent — still read the raw live settings) ─────────
 
     /// <summary>POST /api/nightsummary/test-email — send a test email.</summary>
     [Route(HttpVerbs.Post, "/nightsummary/test-email")]
@@ -599,131 +557,24 @@ public class NightSummaryController : WebApiController
         });
     }
 
-    /// <summary>POST /api/nightsummary/sessions/{sessionId}/resend — resend a session report.</summary>
-    [Route(HttpVerbs.Post, "/nightsummary/sessions/{sessionId}/resend")]
-    public async Task<object> ResendSession(string sessionId)
-    {
-        return await Task.Run(async () =>
-        {
-            try
-            {
-                var asm = GetNightSummaryAssembly();
-                if (asm == null)
-                    return (object)new ApiResponse { Success = false, Error = "Night Summary plugin not loaded" };
-
-                var liveDbPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "NINA", "NightSummary", "nightsummary.sqlite");
-
-                if (!File.Exists(liveDbPath))
-                    return (object)new ApiResponse { Success = false, Error = "Session database not found" };
-
-                // Get SessionService from SettingsManager's assembly — find it via MEF exports
-                // Pattern: SessionService is a singleton accessed via PluginBase or direct instantiation
-                var sessionServiceType = asm.GetType("NINA.Plugin.NightSummary.Session.SessionService");
-                if (sessionServiceType == null)
-                    return (object)new ApiResponse { Success = false, Error = "SessionService type not found" };
-
-                // SessionService needs SettingsManager — create with parameterless constructor isn't available.
-                // Instead, call SendFromDatabaseAsync via the PluginLoader pattern:
-                // Access the NightSummaryPlugin singleton instance via the MEF container's exported values
-                // by searching loaded types for a static singleton or the plugin's active instance.
-                var pluginType = asm.GetType("NINA.Plugin.NightSummary.NightSummaryPlugin");
-                // Try to find an active instance via all loaded AppDomain types
-                // The plugin is registered as IPluginManifest; we get the loaded assembly's exports.
-                // Safest approach: invoke SessionService.SendFromDatabaseAsync with new instance
-                // SessionService ctor takes SettingsManager and IProfileService.
-                // We'll use the static SettingsManager.Instance (no arg ctor not available for service).
-                // Instead - create a new SessionService with null profile service (it may still work for sending).
-                var settingsManagerType = asm.GetType("NINA.Plugin.NightSummary.Data.SettingsManager");
-                var settingsManagerInstance = settingsManagerType?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
-
-                var sessionServiceCtor = sessionServiceType.GetConstructors().FirstOrDefault();
-                if (sessionServiceCtor == null)
-                    return (object)new ApiResponse { Success = false, Error = "SessionService constructor not found" };
-
-                // Pass null for profileService — SessionService only uses it for filter names during live sessions
-                var ctorParams = sessionServiceCtor.GetParameters();
-                var args = ctorParams.Select(p => p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null).ToArray();
-                // Fill settingsManager param
-                for (int i = 0; i < ctorParams.Length; i++)
-                {
-                    if (ctorParams[i].ParameterType.Name.Contains("SettingsManager") && settingsManagerInstance != null)
-                        args[i] = settingsManagerInstance;
-                }
-
-                var sessionService = sessionServiceCtor.Invoke(args);
-                var sendMethod = sessionServiceType.GetMethod("SendFromDatabaseAsync",
-                    new[] { typeof(string), typeof(string) });
-                if (sendMethod == null)
-                    sendMethod = sessionServiceType.GetMethod("SendFromDatabaseAsync",
-                        new[] { typeof(string), typeof(string) });
-
-                if (sendMethod == null)
-                    return (object)new ApiResponse { Success = false, Error = "SendFromDatabaseAsync not found" };
-
-                var task = (Task)sendMethod.Invoke(sessionService, new object[] { liveDbPath, sessionId });
-                await task;
-                return new { Success = true, Response = "Report resent" };
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"NightSummaryController: ResendSession failed: {ex.InnerException?.Message ?? ex.Message}");
-                return (object)new ApiResponse { Success = false, Error = ex.InnerException?.Message ?? ex.Message };
-            }
-        });
-    }
-
     /// <summary>
-    /// Attempts to re-parse the NINA log file for the given session and cache the results in the DB.
-    /// Returns the parsed timing events as dictionaries, or an empty list if parsing fails or finds nothing.
-    /// Mirrors the fallback pattern used by SessionService.BuildReportDataAsync and SendFromDatabaseAsync.
+    /// POST /api/nightsummary/sessions/{sessionId}/resend — re-fire configured delivery channels
+    /// for a historical session. Replaces the previous ~60-line reflection-based reconstruction
+    /// of SessionService (fragile constructor-parameter guessing) with a single facade call.
     /// </summary>
-    private static List<Dictionary<string, object>> TryReparseAndCacheTimingEvents(
-        object db, Type dbType, object session, string sessionId, int imageCount)
+    [Route(HttpVerbs.Post, "/nightsummary/sessions/{sessionId}/resend")]
+    public async Task ResendSession(string sessionId)
     {
         try
         {
-            var asm = GetNightSummaryAssembly();
-            var parserType = asm?.GetType("NINA.Plugin.NightSummary.Data.NinaLogParser");
-            if (parserType == null) return new List<Dictionary<string, object>>();
-
-            var parseMethod = parserType.GetMethod("Parse",
-                BindingFlags.Public | BindingFlags.Static,
-                null,
-                new[] { typeof(DateTime), typeof(DateTime), typeof(int) },
-                null);
-            if (parseMethod == null) return new List<Dictionary<string, object>>();
-
-            // Read SessionStart / SessionEnd from the raw session record via reflection
-            var sessionType = session.GetType();
-            var startProp = sessionType.GetProperty("SessionStart");
-            var endProp = sessionType.GetProperty("SessionEnd");
-            if (startProp == null || endProp == null) return new List<Dictionary<string, object>>();
-
-            var sessionStart = (DateTime)startProp.GetValue(session);
-            var sessionEnd = (DateTime)endProp.GetValue(session);
-
-            // Skip re-parse for sessions that haven't ended yet or have invalid timestamps
-            if (sessionStart == default || sessionEnd == default || sessionEnd <= sessionStart)
-                return new List<Dictionary<string, object>>();
-
-            var parsed = (IList)parseMethod.Invoke(null, new object[] { sessionStart, sessionEnd, imageCount });
-            if (parsed == null || parsed.Count == 0) return new List<Dictionary<string, object>>();
-
-            // Persist to DB so subsequent calls don't re-parse
-            var clearMethod = dbType.GetMethod("ClearTimingEvents");
-            var saveMethod = dbType.GetMethod("SaveTimingEvents");
-            clearMethod?.Invoke(db, new object[] { sessionId });
-            saveMethod?.Invoke(db, new object[] { sessionId, parsed });
-
-            Logger.Info($"NightSummaryController: Log re-parse for {sessionId} yielded {parsed.Count} timing events");
-            return parsed.Cast<object>().Select(MapToDict).ToList();
+            var json = await Task.Run(() => InvokeApi("Resend", sessionId));
+            if (json == null) { await SendErrorAsync("Night Summary plugin not loaded"); return; }
+            await SendJsonAsync(json);
         }
         catch (Exception ex)
         {
-            Logger.Warning($"NightSummaryController: Log re-parse failed for {sessionId} — {ex.InnerException?.Message ?? ex.Message}");
-            return new List<Dictionary<string, object>>();
+            Logger.Error($"NightSummaryController: ResendSession failed: {ex.InnerException?.Message ?? ex.Message}");
+            await SendErrorAsync(ex.InnerException?.Message ?? ex.Message);
         }
     }
 }
