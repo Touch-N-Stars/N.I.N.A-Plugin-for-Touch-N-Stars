@@ -1,9 +1,8 @@
 # Touch 'N' Stars
 
-## Unreleased
-
-- Added Night Summary plugin integration: new `/api/nightsummary/*` endpoints for sessions, settings, test notifications and report resending
-- Fixed post-build deployment copying the plugin to a folder named `Touch ''N'' Stars` instead of `Touch 'N' Stars`
+## 1.3.0.0
+- Generated Celestia Atlas landscapes are now stored in the persistent N.I.N.A. user data; existing app-local landscapes are migrated without overwriting user content
+- The `celestia-atlas-data` directory is now packaged and served
 
 ## 1.2.7.6
 

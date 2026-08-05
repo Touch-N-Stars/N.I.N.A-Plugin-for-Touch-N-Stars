@@ -28,6 +28,8 @@ namespace TouchNStars.Server {
         public void CreateServer() {
             string assemblyFolder = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             string webAppDir = Path.Combine(assemblyFolder, "app");
+            string userLandscapesDir =
+                StellariumLandscapeService.ResolvePersistentLandscapesRoot(createIfMissing: true);
 
             // Suppress EmbedIO verbose logging by unregistering the logger
             try { Swan.Logging.Logger.UnregisterLogger<Swan.Logging.ConsoleLogger>(); } catch { }
@@ -58,7 +60,11 @@ namespace TouchNStars.Server {
                 .WithController<ProxyController>()       // Generic proxy for external URLs
                 .WithController<FilesystemController>()
                 .WithController<FitsAnalysisController>()
-                .WithController<StellariumLandscapeController>()
+                .WithController<StellariumLandscapeController>());
+            WebServer = WebServer.WithStaticFolder(
+                StellariumLandscapeService.UserLandscapesRoute,
+                userLandscapesDir,
+                false);
                 .WithController<NightSummaryController>());  // Night Summary plugin integration
             WebServer = WebServer.WithStaticFolder("/", webAppDir, false); // Register the static folder, which will be used to serve the web app
         }
