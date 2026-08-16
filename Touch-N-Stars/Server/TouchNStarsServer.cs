@@ -60,7 +60,8 @@ namespace TouchNStars.Server {
                 .WithController<ProxyController>()       // Generic proxy for external URLs
                 .WithController<FilesystemController>()
                 .WithController<FitsAnalysisController>()
-                .WithController<StellariumLandscapeController>());
+                .WithController<StellariumLandscapeController>()
+                .WithController<NightSummaryController>());  // Night Summary plugin integration
             WebServer = WebServer.WithStaticFolder(
                 StellariumLandscapeService.UserLandscapesRoute,
                 userLandscapesDir,
