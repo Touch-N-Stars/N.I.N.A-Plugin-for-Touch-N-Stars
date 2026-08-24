@@ -45,7 +45,10 @@
   <PropertyGroup />
   <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="!$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))">
     <PropertyGroup>
-      <WindowsPluginDeployDir>$([System.IO.Path]::Combine($([System.Environment]::GetEnvironmentVariable('LOCALAPPDATA')), 'NINA', 'Plugins', '3.0.0', 'Touch ''N'' Stars'))</WindowsPluginDeployDir>
+      <!-- The folder name contains single quotes. They must stay MSBuild-escaped as %27, otherwise
+           they terminate the string literal of the DestinationFiles transform below. MSBuild
+           unescapes them when the path is finally used. -->
+      <WindowsPluginDeployDir>$(LOCALAPPDATA)\NINA\Plugins\3.0.0\Touch %27N%27 Stars</WindowsPluginDeployDir>
     </PropertyGroup>
     <Message Text="Copying plugin output to $(WindowsPluginDeployDir)" Importance="High" />
     <MakeDir Directories="$(WindowsPluginDeployDir)" />
