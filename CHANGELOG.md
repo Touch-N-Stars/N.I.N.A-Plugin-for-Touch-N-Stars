@@ -1,5 +1,8 @@
 # Touch 'N' Stars
 
+## 1.3.2.0
+- Update Touch N Stars WebApp
+
 ## 1.3.1.0
 - Update Touch N Stars WebApp
 
