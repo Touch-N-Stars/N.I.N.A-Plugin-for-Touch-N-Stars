@@ -65,7 +65,12 @@ namespace TouchNStars.Server.Services {
                     SensorType pattern = bayerPattern is BayerPatternEnum.Auto or BayerPatternEnum.None
                         ? SensorType.RGGB
                         : imageData.MetaData.StringToSensorType(bayerPattern.ToString());
-                    rendered = rendered.Debayer(bayerPattern: pattern);
+                    // saveColorChannels: true is required for unlinked stretch. DebayeredImage.Stretch()
+                    // (NINA.Image/ImageData/DebayeredImage.cs) silently forces unlinked back to false
+                    // whenever DebayeredData is null, and BayerFilter16bpp only populates it when
+                    // SaveColorChannels/SaveLumChannel is set - without this the "unlinked" checkbox
+                    // has no effect no matter what the request asks for.
+                    rendered = rendered.Debayer(bayerPattern: pattern, saveColorChannels: true);
                 }
 
                 IRenderedImage stretched = await rendered.Stretch(stretchFactor, blackClipping, unlinked)
