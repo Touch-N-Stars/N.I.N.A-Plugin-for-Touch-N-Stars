@@ -5,6 +5,7 @@ using NINA.Core.Enum;
 using NINA.Core.Utility;
 using NINA.Image.ImageData;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -157,10 +158,19 @@ public class FilesystemController : WebApiController
             [".xml"] = "application/xml"
         };
 
+    // The anonymous responses in this controller already use camelCase field names; the
+    // ImageInfo POCO does not, and the client reads camelCase throughout. Without this
+    // resolver /filesystem/imageinfo answers { "Success": ... } and every client check
+    // against info.success silently fails.
+    private static readonly JsonSerializerSettings JsonSettings = new()
+    {
+        ContractResolver = new CamelCasePropertyNamesContractResolver()
+    };
+
     private Task SendJson(object data, int statusCode = 200)
     {
         HttpContext.Response.StatusCode = statusCode;
-        string json = JsonConvert.SerializeObject(data);
+        string json = JsonConvert.SerializeObject(data, JsonSettings);
         return HttpContext.SendStringAsync(json, "application/json", Encoding.UTF8);
     }
 
