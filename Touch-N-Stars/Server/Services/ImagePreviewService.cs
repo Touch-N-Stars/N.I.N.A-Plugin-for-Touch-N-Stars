@@ -47,7 +47,7 @@ namespace TouchNStars.Server.Services {
             try {
                 ct.ThrowIfCancellationRequested();
 
-                IRenderedImage rendered = await GetOrLoadRenderedImageAsync(fullPath, debayerRequested, bitDepth, ct)
+                IRenderedImage rendered = await GetOrLoadRenderedImageAsync(fullPath, debayerRequested, bitDepth)
                     .ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
 
@@ -67,8 +67,11 @@ namespace TouchNStars.Server.Services {
             }
         }
 
+        // No CancellationToken here: the only available CreateFromFile overload (see below)
+        // doesn't take one, so the file load itself can't observe cancellation - RenderPreviewAsync
+        // still checks ct.ThrowIfCancellationRequested() before and after this call.
         private static async Task<IRenderedImage> GetOrLoadRenderedImageAsync(
-            string fullPath, bool debayerRequested, int bitDepth, CancellationToken ct) {
+            string fullPath, bool debayerRequested, int bitDepth) {
 
             lock (CacheLock) {
                 if (cache != null && cache.Path == fullPath && DateTime.UtcNow - cache.CachedAtUtc < CacheTtl) {
@@ -80,8 +83,12 @@ namespace TouchNStars.Server.Services {
             // what the file format itself says - it is NOT how Bayer-ness is detected. The real
             // signal is imageData.Properties.IsBayered, read back after load from the file's own
             // metadata (set by FITS.Load/XISF.Load/RawToImageArray).
+            //
+            // RawConverterEnum.FREEIMAGE is a no-op (RawConverterFactory always returns
+            // LibRawConverter regardless of it), kept only because it's the argument the available
+            // overload requires.
             var imageData = await TouchNStars.Mediators.ImageDataFactory
-                .CreateFromFile(fullPath, bitDepth, isBayered: false, ct)
+                .CreateFromFile(fullPath, bitDepth, false, RawConverterEnum.FREEIMAGE)
                 .ConfigureAwait(false);
 
             if (imageData == null) {

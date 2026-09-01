@@ -1,6 +1,7 @@
 using EmbedIO;
 using EmbedIO.Routing;
 using EmbedIO.WebApi;
+using NINA.Core.Enum;
 using NINA.Core.Utility;
 using NINA.Image.ImageData;
 using Newtonsoft.Json;
@@ -418,8 +419,11 @@ public class FilesystemController : WebApiController
             }
 
             int bitDepth = ResolveBitDepth(fullPath);
+            // RawConverterEnum.FREEIMAGE is a no-op (see ImagePreviewService) but is the only
+            // CreateFromFile overload the referenced NINA package version exposes; the load
+            // itself does not observe HttpContext.CancellationToken because of that.
             var imageData = await TouchNStars.Mediators.ImageDataFactory
-                .CreateFromFile(fullPath, bitDepth, false, HttpContext.CancellationToken);
+                .CreateFromFile(fullPath, bitDepth, false, RawConverterEnum.FREEIMAGE);
 
             if (imageData == null)
             {

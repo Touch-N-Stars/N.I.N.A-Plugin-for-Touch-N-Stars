@@ -72,7 +72,7 @@ internal class FitsAnalysisController : WebApiController
 
             Logger.Info($"[FitsAnalysisController] Reading FITS parameters: {fullPath}");
             var imageData = await TouchNStars.Mediators.ImageDataFactory
-                .CreateFromFile(fullPath, 16, false, CancellationToken.None);
+                .CreateFromFile(fullPath, 16, false, RawConverterEnum.FREEIMAGE);
 
             if (imageData == null)
             {
@@ -187,7 +187,7 @@ internal class FitsAnalysisController : WebApiController
 
             Logger.Info($"[FitsAnalysisController] Loading FITS for plate solve: {fullPath}");
             var imageData = await TouchNStars.Mediators.ImageDataFactory
-                .CreateFromFile(fullPath, 16, false, CancellationToken.None);
+                .CreateFromFile(fullPath, 16, false, RawConverterEnum.FREEIMAGE);
 
             if (imageData == null)
             {
