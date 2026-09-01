@@ -18,15 +18,48 @@ namespace TouchNStars.Server.Controllers;
 ///   GET    /api/filesystem/browse?path=...         — list directories and files
 ///   POST   /api/filesystem/directory               — create a directory (body: { "path": "..." })
 ///   DELETE /api/filesystem/directory?path=...      — delete a directory (recursive)
+///   GET    /api/filesystem/file?path=...&amp;download=1 — stream a file (binary)
+///   PUT    /api/filesystem/rename                  — rename/move (body: { "sourcePath", "targetPath" })
 ///   DELETE /api/filesystem/file?path=...           — delete a file
 /// </summary>
 public class FilesystemController : WebApiController
 {
+    private const int StreamBufferSize = 81920;
+
+    private static readonly Dictionary<string, string> ContentTypesByExtension =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            [".png"] = "image/png",
+            [".jpg"] = "image/jpeg",
+            [".jpeg"] = "image/jpeg",
+            [".gif"] = "image/gif",
+            [".webp"] = "image/webp",
+            [".bmp"] = "image/bmp",
+            [".tif"] = "image/tiff",
+            [".tiff"] = "image/tiff",
+            [".fit"] = "application/fits",
+            [".fits"] = "application/fits",
+            [".fts"] = "application/fits",
+            [".txt"] = "text/plain",
+            [".log"] = "text/plain",
+            [".csv"] = "text/csv",
+            [".json"] = "application/json",
+            [".xml"] = "application/xml"
+        };
+
     private Task SendJson(object data, int statusCode = 200)
     {
         HttpContext.Response.StatusCode = statusCode;
         string json = JsonConvert.SerializeObject(data);
         return HttpContext.SendStringAsync(json, "application/json", Encoding.UTF8);
+    }
+
+    private static string GetContentType(string path)
+    {
+        string extension = Path.GetExtension(path);
+        return ContentTypesByExtension.TryGetValue(extension ?? string.Empty, out var contentType)
+            ? contentType
+            : "application/octet-stream";
     }
 
     // -------------------------------------------------------------------------
@@ -189,7 +222,11 @@ public class FilesystemController : WebApiController
     }
 
     // -------------------------------------------------------------------------
-    // GET /api/filesystem/file?path=...  — read file content as text
+    // GET /api/filesystem/file?path=...[&download=1]  — stream raw file content
+    //
+    // The response is a byte-for-byte copy of the file. Reading it as UTF-8 text
+    // would replace every byte >= 0x80 with U+FFFD, which corrupts images and the
+    // pixel data of FITS files.
     // -------------------------------------------------------------------------
     [Route(HttpVerbs.Get, "/filesystem/file")]
     public async Task ReadFile()
@@ -211,9 +248,21 @@ public class FilesystemController : WebApiController
                 return;
             }
 
-            string content = await File.ReadAllTextAsync(fullPath, Encoding.UTF8);
+            var info = new FileInfo(fullPath);
+            string downloadParam = HttpContext.Request.QueryString["download"];
+            bool asAttachment = downloadParam == "1" ||
+                string.Equals(downloadParam, "true", StringComparison.OrdinalIgnoreCase);
+
             HttpContext.Response.StatusCode = 200;
-            await HttpContext.SendStringAsync(content, "text/plain", Encoding.UTF8);
+            HttpContext.Response.ContentType = GetContentType(fullPath);
+            // Content-Length lets the client show real download progress.
+            HttpContext.Response.ContentLength64 = info.Length;
+            HttpContext.Response.Headers["Content-Disposition"] =
+                $"{(asAttachment ? "attachment" : "inline")}; filename=\"{info.Name}\"";
+
+            using var input = new FileStream(
+                fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, StreamBufferSize, useAsync: true);
+            await input.CopyToAsync(HttpContext.Response.OutputStream, StreamBufferSize).ConfigureAwait(false);
         }
         catch (UnauthorizedAccessException)
         {
@@ -222,6 +271,80 @@ public class FilesystemController : WebApiController
         catch (Exception ex)
         {
             Logger.Error($"[FilesystemController.ReadFile] {ex.Message}", ex);
+            await SendJson(new { success = false, error = ex.Message }, 500);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // PUT /api/filesystem/rename  body: { "sourcePath": "...", "targetPath": "..." }
+    //
+    // Handles both files and directories. The target's parent directory has to
+    // exist, so this doubles as a move within the existing folder tree.
+    // -------------------------------------------------------------------------
+    [Route(HttpVerbs.Put, "/filesystem/rename")]
+    public async Task Rename()
+    {
+        try
+        {
+            var body = await HttpContext.GetRequestDataAsync<Dictionary<string, string>>();
+
+            if (body == null
+                || !body.TryGetValue("sourcePath", out var sourcePath) || string.IsNullOrWhiteSpace(sourcePath)
+                || !body.TryGetValue("targetPath", out var targetPath) || string.IsNullOrWhiteSpace(targetPath))
+            {
+                await SendJson(new { success = false, error = "Missing 'sourcePath' or 'targetPath' in request body" }, 400);
+                return;
+            }
+
+            string fullSource = Path.GetFullPath(sourcePath);
+            string fullTarget = Path.GetFullPath(targetPath);
+
+            if (string.Equals(fullSource, fullTarget, StringComparison.Ordinal))
+            {
+                await SendJson(new { success = true, path = fullTarget });
+                return;
+            }
+
+            bool sourceIsDirectory = Directory.Exists(fullSource);
+            if (!sourceIsDirectory && !File.Exists(fullSource))
+            {
+                await SendJson(new { success = false, error = "Source does not exist" }, 404);
+                return;
+            }
+
+            if (File.Exists(fullTarget) || Directory.Exists(fullTarget))
+            {
+                await SendJson(new { success = false, error = "Target already exists" }, 409);
+                return;
+            }
+
+            string targetParent = Path.GetDirectoryName(fullTarget);
+            if (string.IsNullOrEmpty(targetParent) || !Directory.Exists(targetParent))
+            {
+                await SendJson(new { success = false, error = "Target directory does not exist" }, 400);
+                return;
+            }
+
+            if (sourceIsDirectory)
+            {
+                Directory.Move(fullSource, fullTarget);
+            }
+            else
+            {
+                File.Move(fullSource, fullTarget);
+            }
+
+            Logger.Info($"[FilesystemController] Renamed: {fullSource} -> {fullTarget}");
+
+            await SendJson(new { success = true, path = fullTarget });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await SendJson(new { success = false, error = "Access denied" }, 403);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[FilesystemController.Rename] {ex.Message}", ex);
             await SendJson(new { success = false, error = ex.Message }, 500);
         }
     }
