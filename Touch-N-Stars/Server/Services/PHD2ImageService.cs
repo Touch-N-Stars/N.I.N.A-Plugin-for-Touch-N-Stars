@@ -156,7 +156,7 @@ namespace TouchNStars.Server.Services
                     {
                         // Use NINA's ImageDataFactory to load the FITS file
                         var imageDataFactory = TouchNStars.Mediators.ImageDataFactory;
-                        IImageData imageData = await imageDataFactory.CreateFromFile(fitsFilePath, 16, false, RawConverterEnum.FREEIMAGE);
+                        IImageData imageData = await imageDataFactory.CreateFromFile(fitsFilePath, 16, false, CancellationToken.None);
 
                         if (imageData != null)
                         {
