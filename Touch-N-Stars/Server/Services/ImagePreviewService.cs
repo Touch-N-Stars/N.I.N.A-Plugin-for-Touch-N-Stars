@@ -24,7 +24,7 @@ namespace TouchNStars.Server.Services {
 
         private class CacheEntry {
             public string Path;
-            public IRenderedImage Rendered;
+            public IImageData ImageData;
             public DateTime CachedAtUtc;
         }
 
@@ -47,9 +47,26 @@ namespace TouchNStars.Server.Services {
             try {
                 ct.ThrowIfCancellationRequested();
 
-                IRenderedImage rendered = await GetOrLoadRenderedImageAsync(fullPath, debayerRequested, bitDepth)
+                IImageData imageData = await GetOrLoadImageDataAsync(fullPath, bitDepth)
                     .ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
+
+                // RenderImage()/Debayer() are cheap views over the already-decoded pixel data
+                // (unlike CreateFromFile, which is the actual disk read + decode), so - like
+                // Stretch() below - they are re-run on every request instead of being cached.
+                // Baking Debayer() into the cached object was the bug: toggling the "Debayer"
+                // checkbox reused the stale cached result and never took effect.
+                IRenderedImage rendered = imageData.RenderImage();
+                if (imageData.Properties.IsBayered && debayerRequested) {
+                    // StringToSensorType falls back to Monochrome for unparseable input, which is
+                    // the wrong default for a Debayer() call - fall back to RGGB (Debayer()'s own
+                    // default) instead when the pattern is Auto/None/unset.
+                    var bayerPattern = imageData.MetaData.Camera.BayerPattern;
+                    SensorType pattern = bayerPattern is BayerPatternEnum.Auto or BayerPatternEnum.None
+                        ? SensorType.RGGB
+                        : imageData.MetaData.StringToSensorType(bayerPattern.ToString());
+                    rendered = rendered.Debayer(bayerPattern: pattern);
+                }
 
                 IRenderedImage stretched = await rendered.Stretch(stretchFactor, blackClipping, unlinked)
                     .ConfigureAwait(false);
@@ -70,12 +87,10 @@ namespace TouchNStars.Server.Services {
         // No CancellationToken here: the only available CreateFromFile overload (see below)
         // doesn't take one, so the file load itself can't observe cancellation - RenderPreviewAsync
         // still checks ct.ThrowIfCancellationRequested() before and after this call.
-        private static async Task<IRenderedImage> GetOrLoadRenderedImageAsync(
-            string fullPath, bool debayerRequested, int bitDepth) {
-
+        private static async Task<IImageData> GetOrLoadImageDataAsync(string fullPath, int bitDepth) {
             lock (CacheLock) {
                 if (cache != null && cache.Path == fullPath && DateTime.UtcNow - cache.CachedAtUtc < CacheTtl) {
-                    return cache.Rendered;
+                    return cache.ImageData;
                 }
             }
 
@@ -95,24 +110,11 @@ namespace TouchNStars.Server.Services {
                 throw new InvalidOperationException("Failed to load image");
             }
 
-            IRenderedImage rendered = imageData.RenderImage();
-
-            if (imageData.Properties.IsBayered && debayerRequested) {
-                // StringToSensorType falls back to Monochrome for unparseable input, which is the
-                // wrong default for a Debayer() call - fall back to RGGB (Debayer()'s own default)
-                // instead when the pattern is Auto/None/unset.
-                var bayerPattern = imageData.MetaData.Camera.BayerPattern;
-                SensorType pattern = bayerPattern is BayerPatternEnum.Auto or BayerPatternEnum.None
-                    ? SensorType.RGGB
-                    : imageData.MetaData.StringToSensorType(bayerPattern.ToString());
-                rendered = rendered.Debayer(bayerPattern: pattern);
-            }
-
             lock (CacheLock) {
-                cache = new CacheEntry { Path = fullPath, Rendered = rendered, CachedAtUtc = DateTime.UtcNow };
+                cache = new CacheEntry { Path = fullPath, ImageData = imageData, CachedAtUtc = DateTime.UtcNow };
             }
 
-            return rendered;
+            return imageData;
         }
 
         public static void InvalidateCache() {
