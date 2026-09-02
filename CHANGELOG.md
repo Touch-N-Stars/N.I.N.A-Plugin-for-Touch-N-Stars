@@ -1,5 +1,8 @@
 # Touch 'N' Stars
 
+## 1.4.0.0
+- feat(filesystem): add server-side preview/imageinfo endpoints
+
 ## 1.3.2.0
 - Update Touch N Stars WebApp
 
