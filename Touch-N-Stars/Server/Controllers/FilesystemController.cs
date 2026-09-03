@@ -120,7 +120,9 @@ public class FilesystemController : WebApiController
             Height = props.Height,
             BitDepth = props.BitDepth,
             IsBayered = props.IsBayered,
-            BayerPattern = props.IsBayered ? meta.Camera.BayerPattern.ToString() : string.Empty,
+            // The pattern that would actually be used to render, not the profile's override -
+            // meta.Camera.BayerPattern is never populated on a file load and so always read "Auto".
+            BayerPattern = props.IsBayered ? ImagePreviewService.ResolveBayerPattern(imageData).ToString() : string.Empty,
             FocalLength = double.IsNaN(meta.Telescope.FocalLength) ? null : meta.Telescope.FocalLength,
             PixelSize = double.IsNaN(meta.Camera.PixelSize) ? null : meta.Camera.PixelSize,
             CameraName = meta.Camera.Name,
@@ -440,6 +442,10 @@ public class FilesystemController : WebApiController
                 await SendJson(new ImageInfo { Success = true, IsSupported = false, Error = "Failed to load image" });
                 return;
             }
+
+            // Same correction the preview path applies, so both endpoints agree on IsBayered -
+            // this is what decides whether the client offers the debayer option at all.
+            imageData = ImagePreviewService.ApplyBayerDetection(imageData);
 
             await SendJson(BuildImageInfo(imageData));
         }

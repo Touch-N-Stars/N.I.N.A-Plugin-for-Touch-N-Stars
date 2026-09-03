@@ -58,19 +58,12 @@ namespace TouchNStars.Server.Services {
                 // checkbox reused the stale cached result and never took effect.
                 IRenderedImage rendered = imageData.RenderImage();
                 if (imageData.Properties.IsBayered && debayerRequested) {
-                    // StringToSensorType falls back to Monochrome for unparseable input, which is
-                    // the wrong default for a Debayer() call - fall back to RGGB (Debayer()'s own
-                    // default) instead when the pattern is Auto/None/unset.
-                    var bayerPattern = imageData.MetaData.Camera.BayerPattern;
-                    SensorType pattern = bayerPattern is BayerPatternEnum.Auto or BayerPatternEnum.None
-                        ? SensorType.RGGB
-                        : imageData.MetaData.StringToSensorType(bayerPattern.ToString());
                     // saveColorChannels: true is required for unlinked stretch. DebayeredImage.Stretch()
                     // (NINA.Image/ImageData/DebayeredImage.cs) silently forces unlinked back to false
                     // whenever DebayeredData is null, and BayerFilter16bpp only populates it when
                     // SaveColorChannels/SaveLumChannel is set - without this the "unlinked" checkbox
                     // has no effect no matter what the request asks for.
-                    rendered = rendered.Debayer(bayerPattern: pattern, saveColorChannels: true);
+                    rendered = rendered.Debayer(bayerPattern: ResolveBayerPattern(imageData), saveColorChannels: true);
                 }
 
                 IRenderedImage stretched = await rendered.Stretch(stretchFactor, blackClipping, unlinked)
@@ -99,10 +92,11 @@ namespace TouchNStars.Server.Services {
                 }
             }
 
-            // isBayered here forces raw pixel data to be treated as Bayer-encoded regardless of
-            // what the file format itself says - it is NOT how Bayer-ness is detected. The real
-            // signal is imageData.Properties.IsBayered, read back after load from the file's own
-            // metadata (set by FITS.Load/XISF.Load/RawToImageArray).
+            // The isBayered argument is a *forcing* flag, not a detection hint: FITS.Load and
+            // XISF.Load store it verbatim into ImageProperties without ever looking at the file
+            // (FITS.cs:163, XISF.cs:224). Passing false here therefore only means "don't force it" -
+            // ApplyBayerDetection() below reads the pattern the file actually declares. The raw
+            // converter is the exception: LibRawConverter hardcodes isBayered: true either way.
             //
             // RawConverterEnum.FREEIMAGE is a no-op (RawConverterFactory always returns
             // LibRawConverter regardless of it), kept only because it's the argument the available
@@ -115,6 +109,10 @@ namespace TouchNStars.Server.Services {
                 throw new InvalidOperationException("Failed to load image");
             }
 
+            // Corrected once per cache entry rather than per request - the rebuild is cheap, but
+            // the cached object is what both the preview and /filesystem/imageinfo report on.
+            imageData = ApplyBayerDetection(imageData);
+
             lock (CacheLock) {
                 cache = new CacheEntry { Path = fullPath, ImageData = imageData, CachedAtUtc = DateTime.UtcNow };
             }
@@ -124,6 +122,74 @@ namespace TouchNStars.Server.Services {
 
         public static void InvalidateCache() {
             lock (CacheLock) { cache = null; }
+        }
+
+        // -------------------------------------------------------------------------
+        // Bayer detection - shared with FilesystemController so /filesystem/imageinfo and
+        // /filesystem/preview never disagree about whether a file is bayered.
+        // -------------------------------------------------------------------------
+
+        /// <summary>
+        /// The CFA patterns ImageUtility.Debayer() actually has a filter for
+        /// (NINA.Image/ImageAnalysis/ImageUtility.cs). Everything else - Monochrome, Color, CMYG,
+        /// CMYG2, LRGB - hits its default branch and throws InvalidImagePropertiesException, so
+        /// this has to be checked before every Debayer() call. Note the enum values are not
+        /// contiguous: RGGB is 2 while CMYG/CMYG2/LRGB sit at 3/4/5, so a range check won't do.
+        /// </summary>
+        public static bool IsDebayerablePattern(SensorType sensorType) => sensorType is
+            SensorType.RGGB or SensorType.RGBG or SensorType.GRGB or SensorType.GRBG or
+            SensorType.GBGR or SensorType.GBRG or SensorType.BGRG or SensorType.BGGR;
+
+        /// <summary>
+        /// Restores the IsBayered flag from what the file itself declares.
+        ///
+        /// FITS.Load/XISF.Load never derive Bayer-ness from the file - they store the caller's
+        /// isBayered argument as-is. The file's real pattern goes somewhere else entirely:
+        /// FITSHeader/XISFHeader parse the BAYERPAT keyword into MetaData.Camera.SensorType. So
+        /// for every FITS/XISF loaded here Properties.IsBayered was false regardless of the
+        /// sensor, which is why OSC frames never offered the debayer option.
+        ///
+        /// ImageProperties.IsBayered is immutable after construction, so the fix is to rebuild the
+        /// IImageData. Passing the existing IImageArray reuses the decoded pixel buffer - no second
+        /// disk read, no copy.
+        /// </summary>
+        public static IImageData ApplyBayerDetection(IImageData imageData) {
+            if (imageData.Properties.IsBayered || !IsDebayerablePattern(imageData.MetaData.Camera.SensorType)) {
+                return imageData;
+            }
+
+            return TouchNStars.Mediators.ImageDataFactory.CreateBaseImageData(
+                imageData.Data,
+                imageData.Properties.Width,
+                imageData.Properties.Height,
+                imageData.Properties.BitDepth,
+                isBayered: true,
+                imageData.MetaData);
+        }
+
+        /// <summary>
+        /// Picks the pattern to debayer with, preferring what the file declares over the active
+        /// profile. NINA's own live view does it the other way round (ImageControlVM.cs), but that
+        /// renders the connected camera's frame - the file browser routinely shows frames from
+        /// another camera, or from a session where the profile has since changed, and there the
+        /// file's own BAYERPAT is the more trustworthy source.
+        /// </summary>
+        public static SensorType ResolveBayerPattern(IImageData imageData) {
+            SensorType fromFile = imageData.MetaData.Camera.SensorType;
+            if (IsDebayerablePattern(fromFile)) {
+                return fromFile;
+            }
+
+            // BayerPatternEnum's values are deliberately kept identical to SensorType's, so the
+            // cast is the intended way across (see NINA.Core/Enum/BayerPatternEnum.cs).
+            BayerPatternEnum profilePattern = TouchNStars.Mediators.Profile.ActiveProfile.CameraSettings.BayerPattern;
+            if (IsDebayerablePattern((SensorType)profilePattern)) {
+                return (SensorType)profilePattern;
+            }
+
+            // Debayer()'s own default - reached when a file is flagged bayered but names no usable
+            // pattern anywhere, e.g. a raw whose converter reported no concrete phase.
+            return SensorType.RGGB;
         }
 
         // -------------------------------------------------------------------------
