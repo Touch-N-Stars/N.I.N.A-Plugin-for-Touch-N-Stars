@@ -1,8 +1,10 @@
 # Touch 'N' Stars
 
+## 1.4.0.1
+- fix(filesystem-preview): read the Bayer pattern from the file header, so OSC FITS/XISF frames offer the debayer option and render with their actual pattern
+
 ## 1.4.0.0
 - feat(filesystem): add server-side preview/imageinfo endpoints
-- fix(filesystem-preview): read the Bayer pattern from the file header, so OSC FITS/XISF frames offer the debayer option and render with their actual pattern
 
 ## 1.3.2.0
 - Update Touch N Stars WebApp
