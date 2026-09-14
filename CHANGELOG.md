@@ -1,5 +1,8 @@
 # Touch 'N' Stars
 
+## Unreleased
+- Atlas DSS survey download: new `/api/atlas/survey/*` endpoints (status, download, cancel, delete) fetch the DSS colour HiPS tile by tile onto the host as 512 px WebP and serve it at `/celestia-atlas-data/surveys/dss` from the persistent data directory; resumable, one job at a time
+
 ## 1.3.0.0
 - Generated Celestia Atlas landscapes are now stored in the persistent N.I.N.A. user data; existing app-local landscapes are migrated without overwriting user content
 - The `celestia-atlas-data` directory is now packaged and served

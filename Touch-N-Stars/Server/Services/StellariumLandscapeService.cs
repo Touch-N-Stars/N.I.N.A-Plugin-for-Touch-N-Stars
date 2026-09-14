@@ -577,13 +577,7 @@ public class StellariumLandscapeService
         }
         else
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            landscapesRoot = Path.Combine(
-                localAppData,
-                "NINA",
-                PersistentDataFolderName,
-                CelestiaAtlasDataFolderName,
-                LandscapesFolderName);
+            landscapesRoot = Path.Combine(ResolvePersistentCelestiaAtlasDataRoot(), LandscapesFolderName);
         }
 
         if (createIfMissing)
@@ -594,6 +588,17 @@ public class StellariumLandscapeService
         }
 
         return Directory.Exists(landscapesRoot) ? landscapesRoot : null;
+    }
+
+    /// <summary>
+    /// Persistent Celestia Atlas data root shared by user landscapes and the DSS survey:
+    /// %LOCALAPPDATA%\NINA\Touch-N-Stars\celestia-atlas-data on Windows, ~/.local/share/NINA/... on Linux.
+    /// Lives outside the plugin folder so it survives plugin updates and reinstalls.
+    /// </summary>
+    internal static string ResolvePersistentCelestiaAtlasDataRoot()
+    {
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(localAppData, "NINA", PersistentDataFolderName, CelestiaAtlasDataFolderName);
     }
 
     private static void MigrateLegacyLandscapes(string persistentRoot)
