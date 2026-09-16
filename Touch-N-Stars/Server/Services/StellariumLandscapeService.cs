@@ -40,7 +40,10 @@ public class StellariumLandscapeService
     private const string CelestiaAtlasDataFolderName = "celestia-atlas-data";
     private const string LegacyStellariumDataFolderName = "stellarium-data";
     private const string LandscapesFolderName = "landscapes";
-    private const string PersistentDataFolderName = "Touch-N-Stars";
+    private const string PersistentDataFolderName = "TnsCache";
+    private const string LegacyPersistentDataFolderName = "Touch-N-Stars";
+    private static readonly object PersistentRootMigrationLock = new();
+    private static bool persistentRootMigrationChecked;
     private const string NormalizedPluginFolderName = "touchnstars";
     private static readonly HashSet<string> ShippedLandscapeFolders =
         new(StringComparer.OrdinalIgnoreCase) { "gray", "guereins" };
@@ -577,13 +580,7 @@ public class StellariumLandscapeService
         }
         else
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            landscapesRoot = Path.Combine(
-                localAppData,
-                "NINA",
-                PersistentDataFolderName,
-                CelestiaAtlasDataFolderName,
-                LandscapesFolderName);
+            landscapesRoot = Path.Combine(ResolvePersistentCelestiaAtlasDataRoot(), LandscapesFolderName);
         }
 
         if (createIfMissing)
@@ -594,6 +591,69 @@ public class StellariumLandscapeService
         }
 
         return Directory.Exists(landscapesRoot) ? landscapesRoot : null;
+    }
+
+    /// <summary>
+    /// Persistent Celestia Atlas data root shared by user landscapes and the DSS survey:
+    /// %LOCALAPPDATA%\NINA\TnsCache\celestia-atlas-data on Windows, ~/.local/share/NINA/... on Linux.
+    /// Lives in the same TnsCache folder as the other plugin data (settings, favorites,
+    /// PHD2 images) and outside the plugin folder so it survives plugin updates and reinstalls.
+    /// </summary>
+    internal static string ResolvePersistentCelestiaAtlasDataRoot()
+    {
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string ninaRoot = Path.Combine(localAppData, "NINA");
+        string root = Path.Combine(ninaRoot, PersistentDataFolderName, CelestiaAtlasDataFolderName);
+        MigrateLegacyPersistentRoot(ninaRoot, root);
+        return root;
+    }
+
+    /// <summary>
+    /// Plugin 1.3.0.0 kept the persistent data below NINA\Touch-N-Stars. Move that tree into
+    /// TnsCache once so users do not end up with two plugin folders in the NINA directory.
+    /// </summary>
+    private static void MigrateLegacyPersistentRoot(string ninaRoot, string root)
+    {
+        lock (PersistentRootMigrationLock)
+        {
+            if (persistentRootMigrationChecked)
+            {
+                return;
+            }
+
+            persistentRootMigrationChecked = true;
+        }
+
+        string legacyParent = Path.Combine(ninaRoot, LegacyPersistentDataFolderName);
+        string legacyRoot = Path.Combine(legacyParent, CelestiaAtlasDataFolderName);
+        if (!Directory.Exists(legacyRoot))
+        {
+            return;
+        }
+
+        if (Directory.Exists(root))
+        {
+            Logger.Warning(
+                $"[StellariumLandscapeService] Both '{legacyRoot}' and '{root}' exist; leaving the legacy folder untouched.");
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(root));
+            Directory.Move(legacyRoot, root);
+            Logger.Info($"[StellariumLandscapeService] Moved persistent Celestia Atlas data from '{legacyRoot}' to '{root}'.");
+
+            if (!Directory.EnumerateFileSystemEntries(legacyParent).Any())
+            {
+                Directory.Delete(legacyParent);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(
+                $"[StellariumLandscapeService] Could not move persistent Celestia Atlas data to '{root}': {ex.Message}");
+        }
     }
 
     private static void MigrateLegacyLandscapes(string persistentRoot)
