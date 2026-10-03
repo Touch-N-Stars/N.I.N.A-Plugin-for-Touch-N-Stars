@@ -6,6 +6,7 @@ using NINA.Core.Utility;
 using NINA.WPF.Base.SkySurvey;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -63,7 +64,10 @@ public class TargetSearchController : WebApiController
             else
             {
                 HttpClient client = new HttpClient();
-                byte[] image = await client.GetByteArrayAsync($"{CoreUtility.Hips2FitsUrl}?hips=CDS%2FP%2FDSS2%2Fcolor&ra={ra}&dec={dec}&width={width}&height={height}&fov={fov}&projection=TAN&coordsys=icrs&rotation_angle=0.0&format=jpg");
+                string raInvariant = ra.ToString(CultureInfo.InvariantCulture);
+                string decInvariant = dec.ToString(CultureInfo.InvariantCulture);
+                string fovInvariant = fov.ToString(CultureInfo.InvariantCulture);
+                byte[] image = await client.GetByteArrayAsync($"{CoreUtility.Hips2FitsUrl}?hips=CDS%2FP%2FDSS2%2Fcolor&ra={raInvariant}&dec={decInvariant}&width={width}&height={height}&fov={fovInvariant}&projection=TAN&coordsys=icrs&rotation_angle=0.0&format=jpg");
                 Response.OutputStream.Write(image, 0, image.Length);
 
                 client.Dispose();
