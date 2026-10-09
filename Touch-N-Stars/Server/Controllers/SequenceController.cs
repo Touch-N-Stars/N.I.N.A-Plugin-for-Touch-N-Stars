@@ -889,8 +889,11 @@ namespace TouchNStars.Server.Controllers
         /// <summary>
         /// POST /api/sequence/move - Move a sequence item, trigger, or condition before or after a target (by ID)
         /// id: ID of the object to move (item, trigger, or condition)
-        /// targetId: ID of the target object to move before/after
-        /// insertAfter: if true, move after target; if false, move before (default: true)
+        /// targetId: ID of the target object to move before/after. It may sit in another container than
+        ///           the moved object, which then changes its parent (IDs, children and settings are kept).
+        /// insertAfter: if true, move after target; if false, move before.
+        ///              When targetId is a container: omit insertAfter to move INTO it (position 0 of its
+        ///              items, triggers or conditions, matching the moved object); otherwise default true.
         /// </summary>
         [Route(HttpVerbs.Post, "/sequence/move")]
         public ApiResponse MoveSequenceItem([QueryField] string id, [QueryField] string targetId, [QueryField] bool? insertAfter = null)
@@ -955,45 +958,63 @@ namespace TouchNStars.Server.Controllers
                     bool isTrigger = objectToMove is ISequenceTrigger;
                     bool isCondition = objectToMove is ISequenceCondition;
 
+                    var mainContainer = GetMainContainer();
+                    if (mainContainer == null)
+                        return MoveError(400, "No sequence loaded");
+
+                    // A container target without insertAfter means "move into it", like /sequence/add.
+                    // The client needs that to drop into an empty list, where there is no sibling to
+                    // position against. Triggers and conditions go into the container's own lists.
+                    if (insertAfter == null && targetObject is ISequenceContainer intoContainer)
+                    {
+                        if (isItem)
+                            return MoveItem((ISequenceItem)objectToMove, intoContainer, 0);
+                        if (isTrigger)
+                            return MoveTrigger((ISequenceTrigger)objectToMove, intoContainer, 0);
+                        if (isCondition)
+                            return MoveCondition((ISequenceCondition)objectToMove, intoContainer, 0);
+                    }
+
                     bool targetIsItem = targetObject is ISequenceItem;
                     bool targetIsTrigger = targetObject is ISequenceTrigger;
                     bool targetIsCondition = targetObject is ISequenceCondition;
 
                     // Ensure both objects are the same type
                     if ((isItem && !targetIsItem) || (isTrigger && !targetIsTrigger) || (isCondition && !targetIsCondition))
-                    {
-                        HttpContext.Response.StatusCode = 400;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Cannot move objects of different types",
-                        };
-                    }
+                        return MoveError(400, "Cannot move objects of different types");
 
-                    // Handle items
+                    int offset = (insertAfter ?? true) ? 1 : 0;
+
+                    // The target sibling may sit in another container than the moved object; the
+                    // object then changes its parent. The index is counted before the object is
+                    // taken out of its old position.
                     if (isItem)
                     {
-                        return MoveItem((ISequenceItem)objectToMove, (ISequenceItem)targetObject, insertAfter);
+                        var targetItem = (ISequenceItem)targetObject;
+                        ISequenceContainer targetParent = null;
+                        FindItemContainer(mainContainer, targetItem, ref targetParent);
+                        if (targetParent == null)
+                            return MoveError(404, "Could not find position of target in sequence");
+                        return MoveItem((ISequenceItem)objectToMove, targetParent, targetParent.Items.IndexOf(targetItem) + offset);
                     }
-                    // Handle triggers
-                    else if (isTrigger)
+                    if (isTrigger)
                     {
-                        return MoveTrigger((ISequenceTrigger)objectToMove, (ISequenceTrigger)targetObject, insertAfter);
+                        var targetTrigger = (ISequenceTrigger)targetObject;
+                        var targetParent = FindTriggerContainer(mainContainer, targetTrigger) as SequenceContainer;
+                        if (targetParent == null)
+                            return MoveError(404, "Target trigger not found in sequence");
+                        return MoveTrigger((ISequenceTrigger)objectToMove, targetParent, targetParent.Triggers.IndexOf(targetTrigger) + offset);
                     }
-                    // Handle conditions
-                    else if (isCondition)
+                    if (isCondition)
                     {
-                        return MoveCondition((ISequenceCondition)objectToMove, (ISequenceCondition)targetObject, insertAfter);
+                        var targetCondition = (ISequenceCondition)targetObject;
+                        var targetParent = FindConditionContainer(mainContainer, targetCondition) as SequenceContainer;
+                        if (targetParent == null)
+                            return MoveError(404, "Target condition not found in sequence");
+                        return MoveCondition((ISequenceCondition)objectToMove, targetParent, targetParent.Conditions.IndexOf(targetCondition) + offset);
                     }
-                    else
-                    {
-                        HttpContext.Response.StatusCode = 400;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Unknown object type",
-                        };
-                    }
+
+                    return MoveError(400, "Unknown object type");
                 }
                 catch (Exception ex)
                 {
@@ -1100,411 +1121,182 @@ namespace TouchNStars.Server.Controllers
                 };
             }
         }
+        private ApiResponse MoveError(int statusCode, string error)
+        {
+            HttpContext.Response.StatusCode = statusCode;
+            return new ApiResponse { Success = false, Error = error, StatusCode = statusCode, Type = "Error" };
+        }
+
+        private ApiResponse MoveSuccess()
+        {
+            HttpContext.Response.StatusCode = 200;
+            return new ApiResponse { Success = true, Error = null, StatusCode = 200, Type = "Success" };
+        }
+
         /// <summary>
-        /// Move a sequence item before or after a target item
+        /// Whether candidate is ancestor itself or one of its nested containers
         /// </summary>
-        private ApiResponse MoveItem(ISequenceItem itemToMove, ISequenceItem targetItem, bool? insertAfter)
+        private static bool IsSameOrNestedContainer(ISequenceContainer ancestor, ISequenceContainer candidate)
+        {
+            if (ancestor == candidate)
+                return true;
+            foreach (var child in ancestor.Items)
+            {
+                if (child is ISequenceContainer childContainer && IsSameOrNestedContainer(childContainer, candidate))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Moves an entity inside one list or from one list into another. index is the position in
+        /// the target list counted before the entity is taken out. Runs on the UI thread.
+        /// </summary>
+        private static void MoveBetweenLists<T>(IList<T> source, IList<T> target, T entity, int index)
+        {
+            int currentIndex = source.IndexOf(entity);
+            if (currentIndex < 0)
+                return;
+            if (source == target && currentIndex < index)
+                index--;
+            source.RemoveAt(currentIndex);
+            target.Insert(Math.Max(0, Math.Min(index, target.Count)), entity);
+        }
+
+        /// <summary>
+        /// Move a sequence item to a position in a container, which may be another container than
+        /// its current one. The object itself is moved, not a clone, so its ID, children, triggers,
+        /// conditions and settings are kept.
+        /// </summary>
+        private ApiResponse MoveItem(ISequenceItem itemToMove, ISequenceContainer targetContainer, int index)
         {
             try
             {
-                bool shouldInsertAfter = insertAfter ?? true;
-
-                // Get index paths for both items
-                var itemIndexPath = CalculateIndexPathForItem(itemToMove);
-                var targetIndexPath = CalculateIndexPathForItem(targetItem);
-
-                if (string.IsNullOrEmpty(itemIndexPath) || string.IsNullOrEmpty(targetIndexPath))
-                {
-                    HttpContext.Response.StatusCode = 404;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Could not find position of item or target in sequence",
-                    };
-                }
-
-                var itemIndices = itemIndexPath.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToList();
-                var targetIndices = targetIndexPath.Split(',').Select(s => int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToList();
-
-                // Items must be in the same parent container to move
-                if (itemIndices.Count != targetIndices.Count)
-                {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Items must be in the same container hierarchy to move",
-                    };
-                }
-
-                // Check if they're in the same parent
-                for (int i = 0; i < itemIndices.Count - 1; i++)
-                {
-                    if (itemIndices[i] != targetIndices[i])
-                    {
-                        HttpContext.Response.StatusCode = 400;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Items must be in the same container to move",
-                        };
-                    }
-                }
-
-                // Navigate to the parent container
                 var mainContainer = GetMainContainer();
                 if (mainContainer == null)
+                    return MoveError(400, "No sequence loaded");
+
+                ISequenceContainer sourceContainer = null;
+                FindItemContainer(mainContainer, itemToMove, ref sourceContainer);
+                if (sourceContainer == null)
+                    return MoveError(404, "Item to move not found in sequence");
+
+                if (sourceContainer == targetContainer)
                 {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "No sequence loaded",
-                    };
-                }
+                    int currentIndex = sourceContainer.Items.IndexOf(itemToMove);
+                    int targetIndex = currentIndex < index ? index - 1 : index;
 
-                ISequenceContainer parentContainer = mainContainer;
-                for (int i = 0; i < itemIndices.Count - 1; i++)
-                {
-                    var idx = itemIndices[i];
-                    if (idx < 0 || idx >= parentContainer.Items.Count)
+                    Application.Current.Dispatcher.Invoke(() =>
                     {
-                        HttpContext.Response.StatusCode = 404;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Invalid container path",
-                        };
-                    }
-
-                    var item = parentContainer.Items[idx];
-                    if (item is ISequenceContainer nextContainer)
-                    {
-                        parentContainer = nextContainer;
-                    }
-                    else
-                    {
-                        HttpContext.Response.StatusCode = 400;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Item at container path is not a container",
-                        };
-                    }
-                }
-
-                int currentIndex = itemIndices[itemIndices.Count - 1];
-                int targetIndex = targetIndices[targetIndices.Count - 1] + (shouldInsertAfter ? 1 : 0);
-
-                // Adjust targetIndex if moving from before the target
-                // When we remove from currentIndex, indices shift down, affecting the target position
-                if (currentIndex < targetIndex)
-                {
-                    targetIndex--;
-                }
-
-                // Perform the move
-                Application.Current.Dispatcher.Invoke(() =>
-                {
-                    if (parentContainer is SequenceContainer seqContainer)
-                    {
-                        if (currentIndex >= 0 && currentIndex < seqContainer.Items.Count &&
+                        if (sourceContainer is SequenceContainer seqContainer &&
+                            currentIndex >= 0 && currentIndex < seqContainer.Items.Count &&
                             targetIndex >= 0 && targetIndex <= seqContainer.Items.Count &&
                             currentIndex != targetIndex)
                         {
                             seqContainer.MoveWithinIntoSequenceBlocks(currentIndex, targetIndex);
                         }
-                    }
+                    });
+                    return MoveSuccess();
+                }
+
+                // The start, target and end areas are the root's only children and stay in place.
+                if (sourceContainer == mainContainer || targetContainer == mainContainer)
+                    return MoveError(400, "Items cannot be moved into or out of the sequence root");
+
+                if (itemToMove is ISequenceContainer movedContainer && IsSameOrNestedContainer(movedContainer, targetContainer))
+                    return MoveError(400, "A container cannot be moved into itself");
+
+                if (!(targetContainer is SequenceContainer targetSeqContainer))
+                    return MoveError(400, "The target cannot hold items");
+
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    // NINA's Remove/Add detach and re-attach the parent, like the existing add and
+                    // remove endpoints. The item stays tracked, so its ID does not change.
+                    if (sourceContainer is SequenceContainer sourceSeqContainer)
+                        sourceSeqContainer.Remove(itemToMove);
+                    else
+                        sourceContainer.Items.Remove(itemToMove);
+
+                    targetSeqContainer.Add(itemToMove);
+                    int lastIndex = targetSeqContainer.Items.Count - 1;
+                    int destination = Math.Max(0, Math.Min(index, lastIndex));
+                    if (destination != lastIndex)
+                        targetSeqContainer.MoveWithinIntoSequenceBlocks(lastIndex, destination);
                 });
 
-                HttpContext.Response.StatusCode = 200;
-                return new ApiResponse
-                {
-                    Success = true,
-                    Error = null,
-                    StatusCode = 200,
-                    Type = "Success"
-                };
+                return MoveSuccess();
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error moving item: {ex}");
-                HttpContext.Response.StatusCode = 500;
-                return new ApiResponse
-                {
-                    Success = false,
-                    Error = $"Failed to move item: {ex.Message}",
-                    StatusCode = 500,
-                    Type = "Error"
-                };
+                return MoveError(500, $"Failed to move item: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Move a trigger before or after a target trigger within the same container
+        /// Move a trigger to a position in a container's triggers, which may belong to another
+        /// container than its current one
         /// </summary>
-        private ApiResponse MoveTrigger(ISequenceTrigger triggerToMove, ISequenceTrigger targetTrigger, bool? insertAfter)
+        private ApiResponse MoveTrigger(ISequenceTrigger triggerToMove, ISequenceContainer targetContainer, int index)
         {
             try
             {
-                bool shouldInsertAfter = insertAfter ?? true;
-
                 var mainContainer = GetMainContainer();
                 if (mainContainer == null)
+                    return MoveError(400, "No sequence loaded");
+
+                if (!(FindTriggerContainer(mainContainer, triggerToMove) is SequenceContainer sourceContainer))
+                    return MoveError(404, "Trigger to move not found in sequence");
+                if (!(targetContainer is SequenceContainer targetSeqContainer))
+                    return MoveError(400, "The target cannot hold triggers");
+
+                Application.Current.Dispatcher.Invoke(() =>
                 {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "No sequence loaded",
-                    };
-                }
+                    MoveBetweenLists(sourceContainer.Triggers, targetSeqContainer.Triggers, triggerToMove, index);
+                    if (sourceContainer != targetSeqContainer)
+                        triggerToMove.AttachNewParent(targetSeqContainer);
+                });
 
-                // Find the container that holds both triggers
-                var triggerContainer = FindTriggerContainer(mainContainer, triggerToMove);
-                if (triggerContainer == null)
-                {
-                    HttpContext.Response.StatusCode = 404;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Trigger to move not found in sequence",
-                    };
-                }
-
-                var targetContainer = FindTriggerContainer(mainContainer, targetTrigger);
-                if (targetContainer == null)
-                {
-                    HttpContext.Response.StatusCode = 404;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Target trigger not found in sequence",
-                    };
-                }
-
-                // Both triggers must be in the same container
-                if (triggerContainer != targetContainer)
-                {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Triggers must be in the same container to move",
-                    };
-                }
-
-                if (triggerContainer is SequenceContainer seqContainer)
-                {
-                    var triggersList = seqContainer.Triggers;
-                    int currentIndex = triggersList.IndexOf(triggerToMove);
-                    int targetIndex = triggersList.IndexOf(targetTrigger);
-
-                    if (currentIndex < 0 || targetIndex < 0)
-                    {
-                        HttpContext.Response.StatusCode = 404;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Could not determine trigger positions",
-                        };
-                    }
-
-                    if (currentIndex == targetIndex)
-                    {
-                        HttpContext.Response.StatusCode = 200;
-                        return new ApiResponse
-                        {
-                            Success = true,
-                            Error = null,
-                            StatusCode = 200,
-                            Type = "Success"
-                        };
-                    }
-
-                    // Calculate new index
-                    int newIndex = targetIndex + (shouldInsertAfter ? 1 : 0);
-
-                    // Adjust if moving before target
-                    if (currentIndex < newIndex)
-                    {
-                        newIndex--;
-                    }
-
-                    // Clamp to valid range
-                    newIndex = Math.Max(0, Math.Min(newIndex, triggersList.Count - 1));
-
-                    // Perform the move
-                    Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        triggersList.RemoveAt(currentIndex);
-                        triggersList.Insert(newIndex, triggerToMove);
-                    });
-
-                    HttpContext.Response.StatusCode = 200;
-                    return new ApiResponse
-                    {
-                        Success = true,
-                        Error = null,
-                        StatusCode = 200,
-                        Type = "Success"
-                    };
-                }
-                else
-                {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Invalid container type",
-                    };
-                }
+                return MoveSuccess();
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error moving trigger: {ex}");
-                HttpContext.Response.StatusCode = 500;
-                return new ApiResponse
-                {
-                    Success = false,
-                    Error = $"Failed to move trigger: {ex.Message}",
-                    StatusCode = 500,
-                    Type = "Error"
-                };
+                return MoveError(500, $"Failed to move trigger: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Move a condition before or after a target condition within the same container
+        /// Move a condition to a position in a container's conditions, which may belong to another
+        /// container than its current one
         /// </summary>
-        private ApiResponse MoveCondition(ISequenceCondition conditionToMove, ISequenceCondition targetCondition, bool? insertAfter)
+        private ApiResponse MoveCondition(ISequenceCondition conditionToMove, ISequenceContainer targetContainer, int index)
         {
             try
             {
-                bool shouldInsertAfter = insertAfter ?? true;
-
                 var mainContainer = GetMainContainer();
                 if (mainContainer == null)
+                    return MoveError(400, "No sequence loaded");
+
+                if (!(FindConditionContainer(mainContainer, conditionToMove) is SequenceContainer sourceContainer))
+                    return MoveError(404, "Condition to move not found in sequence");
+                if (!(targetContainer is SequenceContainer targetSeqContainer))
+                    return MoveError(400, "The target cannot hold conditions");
+
+                Application.Current.Dispatcher.Invoke(() =>
                 {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "No sequence loaded",
-                    };
-                }
+                    MoveBetweenLists(sourceContainer.Conditions, targetSeqContainer.Conditions, conditionToMove, index);
+                    if (sourceContainer != targetSeqContainer)
+                        conditionToMove.AttachNewParent(targetSeqContainer);
+                });
 
-                // Find the container that holds both conditions
-                var conditionContainer = FindConditionContainer(mainContainer, conditionToMove);
-                if (conditionContainer == null)
-                {
-                    HttpContext.Response.StatusCode = 404;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Condition to move not found in sequence",
-                    };
-                }
-
-                var targetContainer = FindConditionContainer(mainContainer, targetCondition);
-                if (targetContainer == null)
-                {
-                    HttpContext.Response.StatusCode = 404;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Target condition not found in sequence",
-                    };
-                }
-
-                // Both conditions must be in the same container
-                if (conditionContainer != targetContainer)
-                {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Conditions must be in the same container to move",
-                    };
-                }
-
-                if (conditionContainer is SequenceContainer seqContainer)
-                {
-                    var conditionsList = seqContainer.Conditions;
-                    int currentIndex = conditionsList.IndexOf(conditionToMove);
-                    int targetIndex = conditionsList.IndexOf(targetCondition);
-
-                    if (currentIndex < 0 || targetIndex < 0)
-                    {
-                        HttpContext.Response.StatusCode = 404;
-                        return new ApiResponse
-                        {
-                            Success = false,
-                            Error = "Could not determine condition positions",
-                        };
-                    }
-
-                    if (currentIndex == targetIndex)
-                    {
-                        HttpContext.Response.StatusCode = 200;
-                        return new ApiResponse
-                        {
-                            Success = true,
-                            Error = null,
-                            StatusCode = 200,
-                            Type = "Success"
-                        };
-                    }
-
-                    // Calculate new index
-                    int newIndex = targetIndex + (shouldInsertAfter ? 1 : 0);
-
-                    // Adjust if moving before target
-                    if (currentIndex < newIndex)
-                    {
-                        newIndex--;
-                    }
-
-                    // Clamp to valid range
-                    newIndex = Math.Max(0, Math.Min(newIndex, conditionsList.Count - 1));
-
-                    // Perform the move
-                    Application.Current.Dispatcher.Invoke(() =>
-                    {
-                        conditionsList.RemoveAt(currentIndex);
-                        conditionsList.Insert(newIndex, conditionToMove);
-                    });
-
-                    HttpContext.Response.StatusCode = 200;
-                    return new ApiResponse
-                    {
-                        Success = true,
-                        Error = null,
-                        StatusCode = 200,
-                        Type = "Success"
-                    };
-                }
-                else
-                {
-                    HttpContext.Response.StatusCode = 400;
-                    return new ApiResponse
-                    {
-                        Success = false,
-                        Error = "Invalid container type",
-                    };
-                }
+                return MoveSuccess();
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error moving condition: {ex}");
-                HttpContext.Response.StatusCode = 500;
-                return new ApiResponse
-                {
-                    Success = false,
-                    Error = $"Failed to move condition: {ex.Message}",
-                    StatusCode = 500,
-                    Type = "Error"
-                };
+                return MoveError(500, $"Failed to move condition: {ex.Message}");
             }
         }
 
