@@ -135,6 +135,9 @@ namespace TouchNStars {
 #endif
                             applicationStatusMediator);
 
+            // Raw data for the app's histogram: tracks the prepared image and saved frame paths.
+            Server.Services.RawImageService.Attach(imagingMediator, imageSaveMediator);
+
             UpdateDefaultPortCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(() => {
                 Port = CachedPort;
                 CachedPort = Port; // This may look useless, but that way the visibility only changes when cachedPort changes and not when the user enters a new port
@@ -208,6 +211,7 @@ namespace TouchNStars {
             mdnsBroadcaster = null;
             Communicator.Dispose();
             Server.Controllers.PHD2Controller.CleanupPHD2Service();
+            Server.Services.RawImageService.Detach();
             return base.Teardown();
         }
 

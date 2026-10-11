@@ -3,6 +3,7 @@
 ## Unreleased
 - Flat assistant runs on the plugin side (`/api/flats/multimode`, `/api/flats/status`, `/api/flats/stop`, `/api/flats/confirm-cover`): one or more filters with AutoExposure, AutoBrightness or SkyFlat, then optional dark flats per successful filter with the determined exposure time and the right filter. The run keeps going while the app is closed; the status reports `Workflow: 2`, the phase, per-filter results, the live ADU and its bit depth. Before the darks the run waits for a cover confirmation unless a flip-flat panel can close itself. An optional target name is stamped on the run's flat and dark frames. Same routes as the PINS fork's multi-filter controller.
 - Linux/PINS builds define the `PINS` compile constant (NINA sources are ahead of the 3.1.2 packages, e.g. `ISymbolBroker`).
+- Raw image data (`/api/raw-image/prepared`, `/history`, `/livestack`): 16-bit preview planes plus an exact full-resolution histogram (65536 bins per channel) and statistics for the app's histogram and client-side stretch; OSC frames are superpixel-debayered, responses are gzip-compressed
 
 ## ## 1.6.0.0 
 - Atlas NSNS narrowband survey (CC BY-NC-SA 4.0): the survey endpoints take an optional `survey` (`dss` default, `nsns` colour composite ohs8, `nsns-ha`, `nsns-oiii`, `nsns-sii` single lines); NSNS tiles inside its Moc.fits coverage are fetched from simg.de, stored as JPEG q85 and served at `/celestia-atlas-data/surveys/nsns`; only one survey download runs at a time
