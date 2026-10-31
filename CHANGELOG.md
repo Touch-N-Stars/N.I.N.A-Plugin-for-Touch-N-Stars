@@ -6,6 +6,7 @@
 - Raw image data (`/api/raw-image/prepared`, `/history`, `/livestack`): 16-bit preview planes plus an exact full-resolution histogram (65536 bins per channel) and statistics for the app's histogram and client-side stretch; OSC frames are superpixel-debayered, responses are gzip-compressed
 - Webapp: add AAPA Plugin
 - fix(phd2): no more "PHD2 not connected" ERROR in the log when a client opens before the PHD2 connection is up (#1467)
+- `/api/sequence/move` moves items, triggers and conditions across containers: the target sibling may sit in another container, and a container `targetId` without `insertAfter` moves into it; the object keeps its id, children and settings, a container cannot be moved into itself and the start/target/end areas stay in place
 
 ## ## 1.6.0.0 
 - Atlas NSNS narrowband survey (CC BY-NC-SA 4.0): the survey endpoints take an optional `survey` (`dss` default, `nsns` colour composite ohs8, `nsns-ha`, `nsns-oiii`, `nsns-sii` single lines); NSNS tiles inside its Moc.fits coverage are fetched from simg.de, stored as JPEG q85 and served at `/celestia-atlas-data/surveys/nsns`; only one survey download runs at a time
