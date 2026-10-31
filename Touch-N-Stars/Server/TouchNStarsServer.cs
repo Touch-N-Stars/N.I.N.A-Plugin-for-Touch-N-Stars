@@ -63,7 +63,8 @@ namespace TouchNStars.Server {
                 .WithController<FitsAnalysisController>()
                 .WithController<StellariumLandscapeController>()
                 .WithController<HipsSurveyController>()  // Atlas survey downloads (DSS, NSNS)
-                .WithController<NightSummaryController>());  // Night Summary plugin integration
+                .WithController<NightSummaryController>()    // Night Summary plugin integration
+                .WithController<FlatDeviceController>());    // Flat wizard runs (single + multi filter, dark flats)
             WebServer = WebServer.WithStaticFolder(
                 StellariumLandscapeService.UserLandscapesRoute,
                 userLandscapesDir,
