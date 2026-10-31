@@ -4,8 +4,13 @@ using NINA.Equipment.Interfaces.Mediator;
 using NINA.Image.Interfaces;
 using NINA.Plugin;
 using NINA.Plugin.Interfaces;
+using NINA.Astrometry.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.Sequencer.Interfaces.Mediator;
+#if PINS
+using NINA.Sequencer.Logic;
+#endif
+using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.WPF.Base.Interfaces.ViewModel;
 using System;
 using System.Collections.Generic;
@@ -30,7 +35,19 @@ namespace TouchNStars {
         IProfileService profile,
         IGuiderMediator guider,
         IMessageBroker broker,
-        ISequenceMediator sequence) {
+        ISequenceMediator sequence,
+        ICameraMediator camera,
+        IImagingMediator imaging,
+        IImageSaveMediator imageSaveMediator,
+        IImageHistoryVM imageHistory,
+        IFilterWheelMediator filterWheel,
+        IFlatDeviceMediator flatDevice,
+        ITelescopeMediator telescope,
+        ITwilightCalculator twilightCalculator,
+#if PINS
+        ISymbolBroker symbolBroker,
+#endif
+        IApplicationStatusMediator applicationStatus) {
 
         public readonly IDeepSkyObjectSearchVM DeepSkyObjectSearchVM = DeepSkyObjectSearchVM;
         public readonly IImageDataFactory ImageDataFactory = ImageDataFactory;
@@ -39,6 +56,18 @@ namespace TouchNStars {
         public readonly IGuiderMediator Guider = guider;
         public readonly IMessageBroker MessageBroker = broker;
         public readonly ISequenceMediator Sequence = sequence;
+        public readonly ICameraMediator Camera = camera;
+        public readonly IImagingMediator Imaging = imaging;
+        public readonly IImageSaveMediator ImageSaveMediator = imageSaveMediator;
+        public readonly IImageHistoryVM ImageHistory = imageHistory;
+        public readonly IFilterWheelMediator FilterWheel = filterWheel;
+        public readonly IFlatDeviceMediator FlatDevice = flatDevice;
+        public readonly ITelescopeMediator Telescope = telescope;
+        public readonly ITwilightCalculator TwilightCalculator = twilightCalculator;
+#if PINS
+        public readonly ISymbolBroker SymbolBroker = symbolBroker;
+#endif
+        public readonly IApplicationStatusMediator ApplicationStatus = applicationStatus;
     }
 
     [Export(typeof(IPluginManifest))]
@@ -64,7 +93,19 @@ namespace TouchNStars {
                     IFramingAssistantVM framingAssistantVM,
                     IGuiderMediator guider,
                     IMessageBroker broker,
-                    ISequenceMediator sequence) {
+                    ISequenceMediator sequence,
+                    IImagingMediator imagingMediator,
+                    IImageSaveMediator imageSaveMediator,
+                    ICameraMediator camera,
+                    IImageHistoryVM imageHistoryVM,
+                    IFilterWheelMediator filterWheelMediator,
+                    IFlatDeviceMediator flatDeviceMediator,
+                    ITelescopeMediator telescope,
+                    ITwilightCalculator twilightCalculator,
+#if PINS
+                    ISymbolBroker symbolBroker,
+#endif
+                    IApplicationStatusMediator applicationStatusMediator) {
             if (Settings.Default.UpdateSettings) {
                 Settings.Default.Upgrade();
                 Settings.Default.UpdateSettings = false;
@@ -80,7 +121,19 @@ namespace TouchNStars {
                             profileService,
                             guider,
                             broker,
-                            sequence);
+                            sequence,
+                            camera,
+                            imagingMediator,
+                            imageSaveMediator,
+                            imageHistoryVM,
+                            filterWheelMediator,
+                            flatDeviceMediator,
+                            telescope,
+                            twilightCalculator,
+#if PINS
+                            symbolBroker,
+#endif
+                            applicationStatusMediator);
 
             UpdateDefaultPortCommand = new CommunityToolkit.Mvvm.Input.RelayCommand(() => {
                 Port = CachedPort;

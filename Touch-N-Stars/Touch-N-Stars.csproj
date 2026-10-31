@@ -13,6 +13,9 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <DefaultItemExcludes Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))">$(DefaultItemExcludes);**/*.xaml.cs;**/*.xaml</DefaultItemExcludes>
+    <!-- PINS builds against the NINA sources, which are ahead of the 3.1.2 packages used on Windows
+         (e.g. ISymbolBroker, sequencer expressions). -->
+    <DefineConstants Condition="$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))">$(DefineConstants);PINS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="EmbedIO" Version="3.5.2" />
