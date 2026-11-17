@@ -614,7 +614,9 @@ namespace TouchNStars.Server.Services
                     {
                         if (client == null || !client.IsConnected)
                         {
-                            throw new InvalidOperationException("PHD2 not connected");
+                            // all-info is polled before the client connects; not an error
+                            lastError = "PHD2 is not connected";
+                            return 0.0;
                         }
 
                         return client.GetPixelScale();

@@ -17,43 +17,27 @@ using SixLabors.ImageSharp.Processing;
 namespace TouchNStars.Server.Services;
 
 /// <summary>
-/// Downloads the DSS colour HiPS (CDS/P/DSS2/color) tile by tile into the persistent
-/// Celestia Atlas data directory and keeps the served survey consistent with what is
-/// actually on disk. Tiles are stored as the source JPEGs, unchanged: re-encoding to WebP
-/// cost ~1.3 s per tile on a PINS host and made the download CPU-bound.
+/// Downloads an Atlas HiPS survey (see <see cref="SurveyDefinition"/>: DSS colour, NSNS
+/// narrowband colour and single lines) tile by tile into the persistent Celestia Atlas data directory and keeps the
+/// served survey consistent with what is actually on disk. DSS tiles are stored as the
+/// source JPEGs, unchanged: re-encoding to WebP cost ~1.3 s per tile on a PINS host and
+/// made the download CPU-bound. NSNS ships 8-bit PNGs (up to ~610 kB), which are re-encoded to JPEG q85.
 ///
-/// Only one download job runs at a time and its state lives in memory; everything else
-/// (installed order, disk usage, resume position) is reconstructed from the files, so a
-/// server restart mid-job simply leaves a resumable partial survey behind. An order is
-/// advertised in <c>properties</c> only once every one of its tiles exists.
+/// Only one download job runs at a time across all surveys and its state lives in memory;
+/// everything else (installed order, disk usage, resume position) is reconstructed from the
+/// files, so a server restart mid-job simply leaves a resumable partial survey behind. An
+/// order is advertised in <c>properties</c> only once every one of its tiles exists; for a
+/// survey with a coverage map that means every tile inside the coverage.
 /// </summary>
-public sealed class DssSurveyService
+public sealed class HipsSurveyService
 {
-    public const string SurveyRoute = "/celestia-atlas-data/surveys/dss";
-    public const int MinOrder = 3;
-    public const int BaseOrder = 4;
-    public const int MaxOrder = 7;
     public const int TileWidth = 512;
     public const double FreeSpaceMargin = 0.10;
 
-    /// <summary>
-    /// Tile sources, tried in this order per tile. STScI publishes an official mirror of the
-    /// identical CDS HiPS (same creator_did and release) on S3; it answers in well under a
-    /// second where the CDS community server took 20-100 s per tile when measured, so the
-    /// mirror goes first and the master stays as fallback. TNS_DSS_SURVEY_SOURCE_URL
-    /// (comma-separated) overrides the list.
-    /// </summary>
-    public static readonly string[] DefaultSourceUrls =
-    {
-        "https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/DSSColor",
-        "https://alasky.cds.unistra.fr/DSS/DSSColor"
-    };
-
     private const string SurveysFolderName = "surveys";
-    private const string DssFolderName = "dss";
     private const string PropertiesFileName = "properties";
+    private const string MocFileName = "Moc.fits";
     private const string TileExtension = ".jpg";
-    private const string SourceTileExtension = TileExtension;
     private const string LegacyTileExtension = ".webp";
     private const int ParallelDownloads = 8;
     private const int TileAttempts = 3;
@@ -61,53 +45,67 @@ public sealed class DssSurveyService
     private const int AllskyColumns = 27;
     private const int AllskyTileWidth = 64;
 
-    // Average source JPEG bytes per tile: means of 60 random tiles per order sampled from the
-    // STScI mirror on 2026-09-14. The app carries the same table for its size estimate
-    // (offlineSkySurvey.js).
-    private static readonly IReadOnlyDictionary<int, long> AverageTileBytes = new Dictionary<int, long>
-    {
-        [3] = 42_000,
-        [4] = 55_000,
-        [5] = 75_000,
-        [6] = 93_000,
-        [7] = 97_000
-    };
-
-    private static readonly JpegEncoder AllskyEncoder = new() { Quality = 85 };
+    private static readonly JpegEncoder JpegQuality85 = new() { Quality = 85 };
 
     private static readonly HttpClient Http = CreateHttpClient();
-    private static readonly Lazy<DssSurveyService> LazyInstance = new(() => new DssSurveyService());
+    private static readonly Lazy<IReadOnlyList<HipsSurveyService>> LazyAll =
+        new(() => SurveyDefinition.All.Select(d => new HipsSurveyService(d)).ToArray());
 
-    public static DssSurveyService Instance => LazyInstance.Value;
+    // Guards the "one job across all surveys" rule; the job itself is per instance.
+    private static readonly object StartGate = new();
+
+    /// <summary>One shared service per <see cref="SurveyDefinition.All"/> entry.</summary>
+    public static IReadOnlyList<HipsSurveyService> All => LazyAll.Value;
+
+    /// <summary>The service for a survey id; null/empty means DSS, unknown ids return null.</summary>
+    public static HipsSurveyService ForId(string id)
+    {
+        SurveyDefinition definition = SurveyDefinition.Find(id);
+        return definition == null ? null : All.First(s => s.Definition == definition);
+    }
 
     private readonly object sync = new();
     private readonly string[] sourceUrls;
     private readonly string rootOverride;
+    private readonly IReadOnlyList<HipsSurveyService> peers;
     private SurveyInventory cachedInventory;
+    private MocCoverage coverage;
     private DownloadJob job;
 
+    /// <param name="definition">Which survey this instance manages.</param>
     /// <param name="sourceUrlOverride">Tile sources for tests; null uses the environment/defaults.</param>
     /// <param name="rootOverride">Survey folder for tests; null uses the persistent data directory.</param>
-    public DssSurveyService(string[] sourceUrlOverride = null, string rootOverride = null)
+    /// <param name="peers">Services whose running job blocks a start here; null means the shared instances.</param>
+    public HipsSurveyService(
+        SurveyDefinition definition,
+        string[] sourceUrlOverride = null,
+        string rootOverride = null,
+        IReadOnlyList<HipsSurveyService> peers = null)
     {
-        sourceUrls = sourceUrlOverride ?? ResolveSourceUrls();
+        Definition = definition ?? throw new ArgumentNullException(nameof(definition));
+        sourceUrls = sourceUrlOverride ?? ResolveSourceUrls(definition);
         this.rootOverride = rootOverride;
+        this.peers = peers;
     }
+
+    public SurveyDefinition Definition { get; }
+
+    public bool IsJobRunning
+    {
+        get
+        {
+            lock (sync)
+            {
+                return job != null && job.IsRunning;
+            }
+        }
+    }
+
+    private string LogPrefix => $"[HipsSurveyService:{Definition.Id}]";
 
     // ------------------------------------------------------------------ HiPS layout helpers
 
-    public static int TileCount(int order) => 12 << (2 * order);
-
-    public static int TileCountUpTo(int order)
-    {
-        int total = 0;
-        for (int o = MinOrder; o <= order; o++)
-        {
-            total += TileCount(o);
-        }
-
-        return total;
-    }
+    public static int FullSkyTileCount(int order) => 12 << (2 * order);
 
     /// <summary>HiPS groups tiles into Dir folders of 10000 (Dir0, Dir10000, ...).</summary>
     public static string TileDirectoryName(int npix) => $"Dir{npix / 10000 * 10000}";
@@ -117,14 +115,64 @@ public sealed class DssSurveyService
         return Path.Combine($"Norder{order}", TileDirectoryName(npix), $"Npix{npix}{extension}");
     }
 
-    public static string TileUrl(string baseUrl, int order, int npix)
+    public static string TileUrl(string baseUrl, int order, int npix, string extension)
     {
-        return $"{baseUrl.TrimEnd('/')}/Norder{order}/{TileDirectoryName(npix)}/Npix{npix}{SourceTileExtension}";
+        return $"{baseUrl.TrimEnd('/')}/Norder{order}/{TileDirectoryName(npix)}/Npix{npix}{extension}";
     }
 
-    public static long EstimateBytes(int order, int tileCount)
+    /// <summary>
+    /// Tiles of one order that exist in this survey: all of them, or those inside the
+    /// coverage map. Without the map (not downloaded yet) the expected count is returned and
+    /// the list is null.
+    /// </summary>
+    public static int TileCount(SurveyDefinition definition, MocCoverage coverage, int order)
     {
-        return AverageTileBytes.TryGetValue(order, out long perTile) ? perTile * tileCount : 0;
+        if (!definition.UsesCoverageMoc)
+        {
+            return FullSkyTileCount(order);
+        }
+
+        if (coverage != null)
+        {
+            return coverage.TileCount(order);
+        }
+
+        return definition.ExpectedTileCounts != null
+            && definition.ExpectedTileCounts.TryGetValue(order, out int expected)
+            ? expected
+            : FullSkyTileCount(order);
+    }
+
+    public static IEnumerable<int> TileIndices(SurveyDefinition definition, MocCoverage coverage, int order)
+    {
+        if (!definition.UsesCoverageMoc)
+        {
+            return Enumerable.Range(0, FullSkyTileCount(order));
+        }
+
+        if (coverage == null)
+        {
+            throw new InvalidOperationException("The coverage map must be loaded before tiles are enumerated.");
+        }
+
+        return coverage.Tiles(order);
+    }
+
+    public int TileCountUpTo(int order)
+    {
+        MocCoverage current = coverage;
+        int total = 0;
+        for (int o = Definition.MinOrder; o <= order; o++)
+        {
+            total += TileCount(Definition, current, o);
+        }
+
+        return total;
+    }
+
+    public static long EstimateBytes(SurveyDefinition definition, int order, int tileCount)
+    {
+        return definition.AverageTileBytes.TryGetValue(order, out long perTile) ? perTile * tileCount : 0;
     }
 
     /// <summary>Highest order N for which orders MinOrder..N are all complete, or null.</summary>
@@ -147,18 +195,18 @@ public sealed class DssSurveyService
     // ------------------------------------------------------------------ paths
 
     /// <summary>
-    /// Persistent survey folder next to the user landscapes; TNS_DSS_SURVEY_PATH overrides it.
-    /// Same logic on Windows/NINA and PINS.
+    /// Persistent survey folder next to the user landscapes; TNS_&lt;ID&gt;_SURVEY_PATH
+    /// overrides it. Same logic on Windows/NINA and PINS.
     /// </summary>
-    public static string ResolvePersistentSurveyRoot(bool createIfMissing)
+    public static string ResolvePersistentSurveyRoot(SurveyDefinition definition, bool createIfMissing)
     {
-        string configured = Environment.GetEnvironmentVariable("TNS_DSS_SURVEY_PATH");
+        string configured = Environment.GetEnvironmentVariable(definition.PathEnvironmentVariable);
         string root = !string.IsNullOrWhiteSpace(configured)
             ? Path.GetFullPath(configured)
             : Path.Combine(
                 StellariumLandscapeService.ResolvePersistentCelestiaAtlasDataRoot(),
                 SurveysFolderName,
-                DssFolderName);
+                definition.FolderName);
 
         if (createIfMissing)
         {
@@ -172,7 +220,7 @@ public sealed class DssSurveyService
     {
         if (rootOverride == null)
         {
-            return ResolvePersistentSurveyRoot(createIfMissing);
+            return ResolvePersistentSurveyRoot(Definition, createIfMissing);
         }
 
         if (createIfMissing)
@@ -183,25 +231,25 @@ public sealed class DssSurveyService
         return rootOverride;
     }
 
-    private static string[] ResolveSourceUrls()
+    private static string[] ResolveSourceUrls(SurveyDefinition definition)
     {
-        string configured = Environment.GetEnvironmentVariable("TNS_DSS_SURVEY_SOURCE_URL");
+        string configured = Environment.GetEnvironmentVariable(definition.SourceUrlEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(configured))
         {
-            return DefaultSourceUrls;
+            return definition.DefaultSourceUrls;
         }
 
         string[] urls = configured
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(u => u.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             .ToArray();
-        return urls.Length > 0 ? urls : DefaultSourceUrls;
+        return urls.Length > 0 ? urls : definition.DefaultSourceUrls;
     }
 
     private static HttpClient CreateHttpClient()
     {
         HttpClient client = new() { Timeout = TimeSpan.FromSeconds(120) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Touch-N-Stars-DSS-Survey/1.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Touch-N-Stars-HiPS-Survey/1.0");
         return client;
     }
 
@@ -219,6 +267,7 @@ public sealed class DssSurveyService
 
         return new SurveyStatus
         {
+            Survey = Definition.Id,
             Path = root,
             SourceUrls = sourceUrls,
             InstalledOrder = inventory.InstalledOrder,
@@ -235,9 +284,9 @@ public sealed class DssSurveyService
 
     public OperationResult StartDownload(int targetOrder)
     {
-        if (targetOrder < BaseOrder || targetOrder > MaxOrder)
+        if (targetOrder < Definition.BaseOrder || targetOrder > Definition.MaxOrder)
         {
-            return OperationResult.Fail(400, $"targetOrder must be between {BaseOrder} and {MaxOrder}.");
+            return OperationResult.Fail(400, $"targetOrder must be between {Definition.BaseOrder} and {Definition.MaxOrder}.");
         }
 
         string root = ResolveRoot(createIfMissing: true);
@@ -247,9 +296,9 @@ public sealed class DssSurveyService
         int missingTiles = 0;
         foreach (OrderState state in inventory.Orders.Where(o => o.Order <= targetOrder))
         {
-            int missing = state.TileCount - state.TilesPresent;
+            int missing = Math.Max(0, state.TileCount - state.TilesPresent);
             missingTiles += missing;
-            missingBytes += EstimateBytes(state.Order, missing);
+            missingBytes += EstimateBytes(Definition, state.Order, missing);
         }
 
         long? free = GetFreeBytes(root);
@@ -261,20 +310,31 @@ public sealed class DssSurveyService
                 $"Not enough free disk space: about {required / 1_000_000} MB needed, {free.Value / 1_000_000} MB free.");
         }
 
-        lock (sync)
+        lock (StartGate)
         {
-            if (job != null && job.IsRunning)
+            HipsSurveyService busyPeer = (peers ?? All).FirstOrDefault(p => p != this && p.IsJobRunning);
+            if (busyPeer != null)
             {
-                return OperationResult.Fail(409, "A survey download is already running.");
+                return OperationResult.Fail(
+                    409,
+                    $"The {busyPeer.Definition.Id.ToUpperInvariant()} survey is downloading; wait for it or cancel it first.");
             }
 
-            DownloadJob newJob = new(targetOrder, TileCountUpTo(targetOrder));
-            newJob.TilesDone = inventory.Orders.Where(o => o.Order <= targetOrder).Sum(o => o.TilesPresent);
-            job = newJob;
-            newJob.Task = Task.Run(() => RunJobAsync(newJob, root));
+            lock (sync)
+            {
+                if (job != null && job.IsRunning)
+                {
+                    return OperationResult.Fail(409, "A survey download is already running.");
+                }
+
+                DownloadJob newJob = new(targetOrder, TileCountUpTo(targetOrder));
+                newJob.TilesDone = inventory.Orders.Where(o => o.Order <= targetOrder).Sum(o => Math.Min(o.TilesPresent, o.TileCount));
+                job = newJob;
+                newJob.Task = Task.Run(() => RunJobAsync(newJob, root));
+            }
         }
 
-        Logger.Info($"[DssSurveyService] Download to order {targetOrder} started ({missingTiles} tiles missing).");
+        Logger.Info($"{LogPrefix} Download to order {targetOrder} started ({missingTiles} tiles missing).");
         return OperationResult.Ok();
     }
 
@@ -327,6 +387,7 @@ public sealed class DssSurveyService
             lock (sync)
             {
                 cachedInventory = null;
+                coverage = null;
             }
 
             try
@@ -336,19 +397,19 @@ public sealed class DssSurveyService
                     Directory.Delete(root, recursive: true);
                 }
 
-                Logger.Info($"[DssSurveyService] Survey deleted from '{root}'.");
+                Logger.Info($"{LogPrefix} Survey deleted from '{root}'.");
                 return OperationResult.Ok();
             }
             catch (Exception ex)
             {
-                Logger.Error($"[DssSurveyService] Delete failed: {ex.Message}");
+                Logger.Error($"{LogPrefix} Delete failed: {ex.Message}");
                 return OperationResult.Fail(500, $"Failed to delete the survey: {ex.Message}");
             }
         }
 
-        if (keepOrder.Value < BaseOrder || keepOrder.Value >= MaxOrder)
+        if (keepOrder.Value < Definition.BaseOrder || keepOrder.Value >= Definition.MaxOrder)
         {
-            return OperationResult.Fail(400, $"keepOrder must be between {BaseOrder} and {MaxOrder - 1}.");
+            return OperationResult.Fail(400, $"keepOrder must be between {Definition.BaseOrder} and {Definition.MaxOrder - 1}.");
         }
 
         SurveyInventory inventory = GetInventory(root, forceRescan: true);
@@ -359,7 +420,7 @@ public sealed class DssSurveyService
 
         try
         {
-            for (int order = keepOrder.Value + 1; order <= MaxOrder; order++)
+            for (int order = keepOrder.Value + 1; order <= Definition.MaxOrder; order++)
             {
                 string orderDir = Path.Combine(root, $"Norder{order}");
                 if (Directory.Exists(orderDir))
@@ -369,12 +430,12 @@ public sealed class DssSurveyService
             }
 
             InvalidateInventory();
-            Logger.Info($"[DssSurveyService] Survey downgraded to order {keepOrder.Value} in '{root}'.");
+            Logger.Info($"{LogPrefix} Survey downgraded to order {keepOrder.Value} in '{root}'.");
             return OperationResult.Ok();
         }
         catch (Exception ex)
         {
-            Logger.Error($"[DssSurveyService] Delete failed: {ex.Message}");
+            Logger.Error($"{LogPrefix} Delete failed: {ex.Message}");
             return OperationResult.Fail(500, $"Failed to delete the survey: {ex.Message}");
         }
     }
@@ -386,9 +447,18 @@ public sealed class DssSurveyService
         CancellationToken token = current.Cancellation.Token;
         try
         {
-            DeleteLegacyTiles(root);
+            if (Definition.HasLegacyWebp)
+            {
+                DeleteLegacyTiles(root);
+            }
 
-            for (int order = MinOrder; order <= current.TargetOrder; order++)
+            if (Definition.UsesCoverageMoc)
+            {
+                await EnsureCoverageAsync(root, token).ConfigureAwait(false);
+                current.TilesTotal = TileCountUpTo(current.TargetOrder);
+            }
+
+            for (int order = Definition.MinOrder; order <= current.TargetOrder; order++)
             {
                 current.CurrentOrder = order;
                 await DownloadOrderAsync(current, root, order, token).ConfigureAwait(false);
@@ -399,7 +469,7 @@ public sealed class DssSurveyService
                         $"{current.FailedInOrder} tiles of order {order} could not be downloaded.");
                 }
 
-                if (order == MinOrder && !File.Exists(AllskyPath(root)))
+                if (order == Definition.MinOrder && !File.Exists(AllskyPath(root)))
                 {
                     await BuildAllskyAsync(root, token).ConfigureAwait(false);
                 }
@@ -409,22 +479,22 @@ public sealed class DssSurveyService
             }
 
             current.Finish("completed", null);
-            Logger.Info($"[DssSurveyService] Download to order {current.TargetOrder} completed.");
+            Logger.Info($"{LogPrefix} Download to order {current.TargetOrder} completed.");
         }
         catch (OperationCanceledException)
         {
             current.Finish("cancelled", "Download cancelled.");
-            Logger.Info("[DssSurveyService] Download cancelled.");
+            Logger.Info($"{LogPrefix} Download cancelled.");
         }
         catch (SurveyDownloadException ex)
         {
             current.Finish("failed", ex.Message);
-            Logger.Warning($"[DssSurveyService] Download failed: {ex.Message}");
+            Logger.Warning($"{LogPrefix} Download failed: {ex.Message}");
         }
         catch (Exception ex)
         {
             current.Finish("failed", ex.Message);
-            Logger.Error($"[DssSurveyService] Download failed: {ex}");
+            Logger.Error($"{LogPrefix} Download failed: {ex}");
         }
         finally
         {
@@ -432,11 +502,100 @@ public sealed class DssSurveyService
         }
     }
 
+    /// <summary>
+    /// Loads the coverage map from disk, or fetches it from the first source that has it.
+    /// It is kept in the survey folder so status and resume work offline afterwards.
+    /// </summary>
+    private async Task EnsureCoverageAsync(string root, CancellationToken token)
+    {
+        if (LoadCoverage(root) != null)
+        {
+            return;
+        }
+
+        string lastError = "no source answered";
+        foreach (string source in sourceUrls)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                byte[] bytes = await Http
+                    .GetByteArrayAsync($"{source.TrimEnd('/')}/{MocFileName}", token)
+                    .ConfigureAwait(false);
+                MocCoverage parsed = MocCoverage.Parse(bytes);
+                WriteAtomically(Path.Combine(root, MocFileName), bytes);
+                lock (sync)
+                {
+                    coverage = parsed;
+                }
+
+                return;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = $"{source}: {ex.Message}";
+            }
+        }
+
+        throw new SurveyDownloadException($"The survey coverage map could not be downloaded ({lastError}).");
+    }
+
+    /// <summary>The cached coverage map, read from the survey folder on first use; null when absent.</summary>
+    private MocCoverage LoadCoverage(string root)
+    {
+        if (!Definition.UsesCoverageMoc)
+        {
+            return null;
+        }
+
+        lock (sync)
+        {
+            if (coverage != null)
+            {
+                return coverage;
+            }
+        }
+
+        string path = string.IsNullOrEmpty(root) ? null : Path.Combine(root, MocFileName);
+        if (path == null || !File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            MocCoverage parsed = MocCoverage.Parse(File.ReadAllBytes(path));
+            lock (sync)
+            {
+                coverage = parsed;
+            }
+
+            return parsed;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"{LogPrefix} Coverage map unreadable, it will be downloaded again: {ex.Message}");
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // the next download overwrites it
+            }
+
+            return null;
+        }
+    }
+
     private async Task DownloadOrderAsync(DownloadJob current, string root, int order, CancellationToken token)
     {
-        int tileCount = TileCount(order);
         List<int> missing = new();
-        for (int npix = 0; npix < tileCount; npix++)
+        foreach (int npix in TileIndices(Definition, coverage, order))
         {
             if (!TileExists(Path.Combine(root, TileRelativePath(order, npix))))
             {
@@ -514,7 +673,7 @@ public sealed class DssSurveyService
                 try
                 {
                     using HttpResponseMessage response = await Http
-                        .GetAsync(TileUrl(source, order, npix), HttpCompletionOption.ResponseHeadersRead, token)
+                        .GetAsync(TileUrl(source, order, npix, Definition.SourceExtension), HttpCompletionOption.ResponseHeadersRead, token)
                         .ConfigureAwait(false);
 
                     if (response.StatusCode == HttpStatusCode.NotFound)
@@ -526,7 +685,10 @@ public sealed class DssSurveyService
                     notFoundEverywhere = false;
 
                     response.EnsureSuccessStatusCode();
-                    byte[] jpeg = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
+                    byte[] payload = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
+                    byte[] jpeg = Definition.ConvertToJpeg
+                        ? ConvertToJpeg(payload, $"tile {order}/{npix} from {source}")
+                        : payload;
                     if (!IsJpeg(jpeg))
                     {
                         throw new SurveyDownloadException($"tile {order}/{npix} from {source} is not a JPEG");
@@ -558,19 +720,41 @@ public sealed class DssSurveyService
             }
         }
 
-        Logger.Debug($"[DssSurveyService] Tile {order}/{npix} failed: {lastError}");
+        Logger.Debug($"{LogPrefix} Tile {order}/{npix} failed: {lastError}");
         return TileResult.Fail(lastError);
     }
 
-    /// <summary>The source is stored unchanged, so only the JPEG SOI marker guards against
-    /// an error page being kept as a tile.</summary>
+    /// <summary>A stored tile is never decoded again, so only the JPEG SOI marker guards
+    /// against an error page being kept as a tile.</summary>
     internal static bool IsJpeg(byte[] bytes) => bytes.Length > 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
+
+    internal static bool IsPng(byte[] bytes) =>
+        bytes.Length > 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
+
+    /// <summary>
+    /// Re-encodes a source tile (RGBA PNG for NSNS) as JPEG q85, flattened on black so
+    /// transparent pixels at the coverage edge stay dark instead of taking random colours.
+    /// </summary>
+    internal static byte[] ConvertToJpeg(byte[] source, string description)
+    {
+        if (!IsPng(source) && !IsJpeg(source))
+        {
+            throw new SurveyDownloadException($"{description} is not an image");
+        }
+
+        using Image<Rgba32> image = Image.Load<Rgba32>(source);
+        image.Mutate(x => x.BackgroundColor(Color.Black));
+        using Image<Rgb24> rgb = image.CloneAs<Rgb24>();
+        using MemoryStream output = new();
+        rgb.Save(output, JpegQuality85);
+        return output.ToArray();
+    }
 
     /// <summary>
     /// Removes the WebP tiles and Allsky of a survey written by an earlier plugin version.
     /// The app only ever sees one tile format, so a JPEG download never starts on top of them.
     /// </summary>
-    private static void DeleteLegacyTiles(string root)
+    private void DeleteLegacyTiles(string root)
     {
         if (!Directory.Exists(root))
         {
@@ -586,25 +770,31 @@ public sealed class DssSurveyService
 
         if (deleted > 0)
         {
-            Logger.Info($"[DssSurveyService] Removed {deleted} legacy WebP files before the download.");
+            Logger.Info($"{LogPrefix} Removed {deleted} legacy WebP files before the download.");
         }
     }
 
     /// <summary>
     /// The order-3 Allsky preview the Atlas expects: 768 tiles at 64 px in 27 columns
-    /// (1728 x 1856), built from the tiles already on disk. This is the only place the
-    /// server still decodes tiles.
+    /// (1728 x 1856), built from the tiles already on disk. Tiles outside a partial coverage
+    /// stay black. Apart from the NSNS conversion this is the only place tiles are decoded.
     /// </summary>
-    private static async Task BuildAllskyAsync(string root, CancellationToken token)
+    private async Task BuildAllskyAsync(string root, CancellationToken token)
     {
-        int tileCount = TileCount(MinOrder);
+        int minOrder = Definition.MinOrder;
+        int tileCount = FullSkyTileCount(minOrder);
         int rows = (int)Math.Ceiling(tileCount / (double)AllskyColumns);
         using Image<Rgb24> allsky = new(AllskyColumns * AllskyTileWidth, rows * AllskyTileWidth);
 
         for (int npix = 0; npix < tileCount; npix++)
         {
             token.ThrowIfCancellationRequested();
-            string tilePath = Path.Combine(root, TileRelativePath(MinOrder, npix));
+            string tilePath = Path.Combine(root, TileRelativePath(minOrder, npix));
+            if (Definition.UsesCoverageMoc && !TileExists(tilePath))
+            {
+                continue;
+            }
+
             using Image<Rgb24> tile = await Image.LoadAsync<Rgb24>(tilePath, token).ConfigureAwait(false);
             tile.Mutate(x => x.Resize(AllskyTileWidth, AllskyTileWidth));
             Point position = new(npix % AllskyColumns * AllskyTileWidth, npix / AllskyColumns * AllskyTileWidth);
@@ -612,11 +802,14 @@ public sealed class DssSurveyService
         }
 
         using MemoryStream output = new();
-        allsky.Save(output, AllskyEncoder);
+        allsky.Save(output, JpegQuality85);
         WriteAtomically(AllskyPath(root), output.ToArray());
     }
 
-    private static string AllskyPath(string root) => Path.Combine(root, $"Norder{MinOrder}", "Allsky" + TileExtension);
+    private string AllskyPath(string root) => AllskyPath(Definition, root);
+
+    private static string AllskyPath(SurveyDefinition definition, string root) =>
+        Path.Combine(root, $"Norder{definition.MinOrder}", "Allsky" + TileExtension);
 
     private static void WriteAtomically(string path, byte[] bytes)
     {
@@ -633,40 +826,32 @@ public sealed class DssSurveyService
 
     // ------------------------------------------------------------------ properties
 
-    public static string BuildPropertiesFile(int installedOrder, string masterUrl, DateTime releaseDateUtc)
+    public static string BuildPropertiesFile(SurveyDefinition definition, int installedOrder, string masterUrl, DateTime releaseDateUtc)
     {
         StringBuilder sb = new();
-        sb.Append("creator_did          = ivo://CDS/P/DSS2/color\n");
-        sb.Append("obs_collection       = DSS colored\n");
-        sb.Append("obs_title            = DSS colored\n");
-        sb.Append("obs_copyright        = Digitized Sky Survey - STScI/NASA, Colored & Healpixed by CDS\n");
-        sb.Append("obs_copyright_url    = http://archive.stsci.edu/dss/copyright.html\n");
-        sb.Append("hips_copyright       = CNRS/Unistra\n");
-        sb.Append("hips_creator         = CDS (A.Oberto, P.Fernique)\n");
-        sb.Append("hips_builder         = Touch-N-Stars DssSurveyService\n");
+        sb.Append(definition.PropertiesHeader);
+        sb.Append("hips_builder         = Touch-N-Stars HipsSurveyService\n");
         sb.Append("hips_version         = 1.4\n");
         sb.Append(CultureInfo.InvariantCulture, $"hips_release_date    = {releaseDateUtc:yyyy-MM-dd'T'HH:mm'Z'}\n");
         sb.Append(CultureInfo.InvariantCulture, $"hips_order           = {installedOrder}\n");
-        sb.Append(CultureInfo.InvariantCulture, $"hips_order_min       = {MinOrder}\n");
+        sb.Append(CultureInfo.InvariantCulture, $"hips_order_min       = {definition.MinOrder}\n");
         sb.Append("hips_frame           = equatorial\n");
         sb.Append(CultureInfo.InvariantCulture, $"hips_tile_width      = {TileWidth}\n");
         sb.Append("hips_tile_format     = jpeg\n");
         sb.Append("hips_status          = private mirror unclonable\n");
         sb.Append(CultureInfo.InvariantCulture, $"hips_master_url      = {masterUrl}\n");
-        sb.Append(CultureInfo.InvariantCulture, $"hips_service_url     = {SurveyRoute}\n");
+        sb.Append(CultureInfo.InvariantCulture, $"hips_service_url     = {definition.Route}\n");
         sb.Append("dataproduct_type     = image\n");
         sb.Append("dataproduct_subtype  = color\n");
-        sb.Append("moc_sky_fraction     = 1\n");
-        sb.Append("prov_progenitor      = STScI\n");
-        sb.Append("obs_ack              = The Digitized Sky Surveys were produced at the Space Telescope Science Institute under U.S. Government grant NAG W-2166. The images of these surveys are based on photographic data obtained using the Oschin Schmidt Telescope on Palomar Mountain and the UK Schmidt Telescope. The plates were processed into the present compressed digital form with the permission of these institutions.\n");
+        sb.Append(definition.PropertiesFooter);
         return sb.ToString();
     }
 
-    private static void WriteProperties(string root, int installedOrder, string masterUrl)
+    private void WriteProperties(string root, int installedOrder, string masterUrl)
     {
         File.WriteAllText(
             Path.Combine(root, PropertiesFileName),
-            BuildPropertiesFile(installedOrder, masterUrl, DateTime.UtcNow),
+            BuildPropertiesFile(Definition, installedOrder, masterUrl, DateTime.UtcNow),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
@@ -695,7 +880,7 @@ public sealed class DssSurveyService
         }
         catch (Exception ex)
         {
-            Logger.Debug($"[DssSurveyService] properties unreadable: {ex.Message}");
+            Logger.Debug($"[HipsSurveyService] properties unreadable: {ex.Message}");
         }
 
         return null;
@@ -716,7 +901,7 @@ public sealed class DssSurveyService
             jobRunning = job != null && job.IsRunning;
         }
 
-        SurveyInventory inventory = ScanInventory(root);
+        SurveyInventory inventory = ScanInventory(Definition, root, LoadCoverage(root));
         // The running job writes properties/Allsky itself; reconciling in parallel would only
         // duplicate that work on the same files.
         if (!jobRunning)
@@ -740,14 +925,19 @@ public sealed class DssSurveyService
         }
     }
 
-    public static SurveyInventory ScanInventory(string root)
+    /// <param name="coverage">
+    /// Coverage map of a partial-sky survey, or null. Without it such a survey counts as not
+    /// installed: completeness cannot be judged without knowing which tiles exist.
+    /// </param>
+    public static SurveyInventory ScanInventory(SurveyDefinition definition, string root, MocCoverage coverage = null)
     {
         List<OrderState> orders = new();
         long totalBytes = 0;
+        bool coverageKnown = !definition.UsesCoverageMoc || coverage != null;
 
-        for (int order = MinOrder; order <= MaxOrder; order++)
+        for (int order = definition.MinOrder; order <= definition.MaxOrder; order++)
         {
-            OrderState state = new() { Order = order, TileCount = TileCount(order) };
+            OrderState state = new() { Order = order, TileCount = TileCount(definition, coverage, order) };
             string orderDir = Path.Combine(root ?? string.Empty, $"Norder{order}");
             if (!string.IsNullOrEmpty(root) && Directory.Exists(orderDir))
             {
@@ -763,18 +953,19 @@ public sealed class DssSurveyService
                 }
             }
 
-            state.Complete = state.TilesPresent >= state.TileCount;
+            state.Complete = coverageKnown && state.TilesPresent >= state.TileCount;
             totalBytes += state.Bytes;
             orders.Add(state);
         }
 
-        bool hasAllsky = !string.IsNullOrEmpty(root) && TileExists(AllskyPath(root));
+        bool hasAllsky = !string.IsNullOrEmpty(root) && TileExists(AllskyPath(definition, root));
         if (hasAllsky)
         {
-            totalBytes += new FileInfo(AllskyPath(root)).Length;
+            totalBytes += new FileInfo(AllskyPath(definition, root)).Length;
         }
 
-        bool hasLegacyTiles = !string.IsNullOrEmpty(root)
+        bool hasLegacyTiles = definition.HasLegacyWebp
+            && !string.IsNullOrEmpty(root)
             && Directory.Exists(root)
             && Directory.EnumerateFiles(root, "*" + LegacyTileExtension, SearchOption.AllDirectories).Any();
 
@@ -828,11 +1019,11 @@ public sealed class DssSurveyService
         }
         catch (Exception ex)
         {
-            Logger.Warning($"[DssSurveyService] Reconcile failed: {ex.Message}");
+            Logger.Warning($"{LogPrefix} Reconcile failed: {ex.Message}");
         }
     }
 
-    private static long? GetFreeBytes(string root)
+    private long? GetFreeBytes(string root)
     {
         try
         {
@@ -851,7 +1042,7 @@ public sealed class DssSurveyService
         }
         catch (Exception ex)
         {
-            Logger.Debug($"[DssSurveyService] Free space unavailable: {ex.Message}");
+            Logger.Debug($"{LogPrefix} Free space unavailable: {ex.Message}");
             return null;
         }
     }
@@ -861,6 +1052,7 @@ public sealed class DssSurveyService
     private sealed class DownloadJob
     {
         private int tilesDone;
+        private int tilesTotal;
         private int tilesFailed;
         private int failedInOrder;
         private long bytesDownloaded;
@@ -871,17 +1063,23 @@ public sealed class DssSurveyService
         public DownloadJob(int targetOrder, int tilesTotal)
         {
             TargetOrder = targetOrder;
-            TilesTotal = tilesTotal;
+            this.tilesTotal = tilesTotal;
             StartedAt = DateTime.UtcNow;
         }
 
         public int TargetOrder { get; }
-        public int TilesTotal { get; }
         public DateTime StartedAt { get; }
         public DateTime? FinishedAt { get; private set; }
         public CancellationTokenSource Cancellation { get; } = new();
         public Task Task { get; set; }
         public bool IsRunning => state == "running";
+
+        /// <summary>Settable: a partial-sky survey knows its exact total only once the coverage map is loaded.</summary>
+        public int TilesTotal
+        {
+            get => Volatile.Read(ref tilesTotal);
+            set => Volatile.Write(ref tilesTotal, value);
+        }
 
         public int CurrentOrder
         {
@@ -997,6 +1195,7 @@ public sealed class DssSurveyService
 
     public sealed class SurveyStatus
     {
+        public string Survey { get; set; }
         public string Path { get; set; }
         public string[] SourceUrls { get; set; }
         public int? InstalledOrder { get; set; }

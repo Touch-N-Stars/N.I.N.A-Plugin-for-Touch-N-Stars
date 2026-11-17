@@ -30,7 +30,6 @@ namespace TouchNStars.Server {
             string webAppDir = Path.Combine(assemblyFolder, "app");
             string userLandscapesDir =
                 StellariumLandscapeService.ResolvePersistentLandscapesRoot(createIfMissing: true);
-            string dssSurveyDir = DssSurveyService.ResolvePersistentSurveyRoot(createIfMissing: true);
 
             // Suppress EmbedIO verbose logging by unregistering the logger
             try { Swan.Logging.Logger.UnregisterLogger<Swan.Logging.ConsoleLogger>(); } catch { }
@@ -58,19 +57,25 @@ namespace TouchNStars.Server {
                 .WithController<UtilityController>()    // Logs, version, api-port
                 .WithController<BahtinovController>()    // Bahtinov mask analysis
                 .WithController<INDIController>()        // INDI driver management
+                .WithController<SequenceController>()    // Sequence item discovery and management
                 .WithController<ProxyController>()       // Generic proxy for external URLs
                 .WithController<FilesystemController>()
                 .WithController<FitsAnalysisController>()
+                .WithController<RawImageController>()     // Raw sensor data for histogram/stretch
                 .WithController<StellariumLandscapeController>()
-                .WithController<DssSurveyController>()   // Atlas DSS survey download
-                .WithController<NightSummaryController>());  // Night Summary plugin integration
+                .WithController<HipsSurveyController>()  // Atlas survey downloads (DSS, NSNS)
+                .WithController<NightSummaryController>()    // Night Summary plugin integration
+                .WithController<FlatDeviceController>());    // Flat wizard runs (single + multi filter, dark flats)
             WebServer = WebServer.WithStaticFolder(
                 StellariumLandscapeService.UserLandscapesRoute,
                 userLandscapesDir,
                 false);
-            // The DSS survey is downloaded on demand into the persistent data directory and
-            // served from there; the app bundle no longer ships any survey tiles.
-            WebServer = WebServer.WithStaticFolder(DssSurveyService.SurveyRoute, dssSurveyDir, false);
+            // The Atlas surveys are downloaded on demand into the persistent data directory and
+            // served from there; the app bundle does not ship any survey tiles.
+            foreach (SurveyDefinition survey in SurveyDefinition.All) {
+                string surveyDir = HipsSurveyService.ResolvePersistentSurveyRoot(survey, createIfMissing: true);
+                WebServer = WebServer.WithStaticFolder(survey.Route, surveyDir, false);
+            }
             WebServer = WebServer.WithStaticFolder("/", webAppDir, false); // Register the static folder, which will be used to serve the web app
         }
 
@@ -95,7 +100,9 @@ namespace TouchNStars.Server {
         public void Stop() {
             try {
                 apiToken?.Cancel();
-                DssSurveyService.Instance.CancelDownload();
+                foreach (HipsSurveyService survey in HipsSurveyService.All) {
+                    survey.CancelDownload();
+                }
                 WebServer?.Dispose();
                 WebServer = null;
                 BackgroundWorker.Cleanup();
