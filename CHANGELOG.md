@@ -1,5 +1,8 @@
 # Touch 'N' Stars
 
+## 1.6.3.1
+- fix(phd2): `set-algo-param` sends the value unchanged instead of adding 0.001, so 100 % weights can be set again (#116)
+
 ## 1.6.3.0
 - Atlas: new survey `nsns-cont` (NSNS DR0.2 RGB continuum, rgb8), orders 3–5
 
