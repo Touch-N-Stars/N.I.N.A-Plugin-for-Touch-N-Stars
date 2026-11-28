@@ -2640,16 +2640,9 @@ namespace TouchNStars.Server.Services
 
                         // Round to a reasonable precision to avoid floating-point precision issues
                         // PHD2 typically works with values to 2-3 decimal places
+                        // Send the rounded value unchanged: any offset would shift every setting and push
+                        // values at the top of a range (e.g. predictiveWeight 1.0) out of PHD2's limits.
                         double roundedValue = Math.Round(value, 3);
-
-                        // Add a tiny offset to all values to avoid PHD2's internal floating-point precision issues
-                        // This ensures we don't hit any problematic decimal representations
-                        // Use 0.001 offset which will survive the 3-decimal rounding
-                        double adjustedValue = roundedValue + 0.001;
-
-                        Logger.Info($"Adjusted value from {roundedValue:F4} to {adjustedValue:F4} to avoid PHD2 floating-point issues");
-
-                        roundedValue = adjustedValue;
 
                         client.SetAlgoParam(axis, name, roundedValue);
 
@@ -2659,7 +2652,7 @@ namespace TouchNStars.Server.Services
                             var actualValue = client.GetAlgoParam(axis, name);
                             Logger.Info($"PHD2 confirmed parameter {axis}.{name} = {actualValue:F10} (expected: {roundedValue:F10})");
 
-                            if (Math.Abs(actualValue - roundedValue) > 0.001)
+                            if (Math.Abs(actualValue - roundedValue) > 0.0005)
                             {
                                 Logger.Warning($"Value mismatch! Sent: {roundedValue:F10}, Got back: {actualValue:F10}");
                             }
