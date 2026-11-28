@@ -10,6 +10,7 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -466,13 +467,7 @@ public static class FlatWizardService
                 }
             case "SkyFlat":
                 {
-#if PINS
-                    var flat = new SkyFlat(m.Profile, m.Camera, m.Telescope, m.Imaging, m.ImageSaveMediator,
-                        m.ImageHistory, m.FilterWheel, m.TwilightCalculator, m.SymbolBroker);
-#else
-                    var flat = new SkyFlat(m.Profile, m.Camera, m.Telescope, m.Imaging, m.ImageSaveMediator,
-                        m.ImageHistory, m.FilterWheel, m.TwilightCalculator);
-#endif
+                    var flat = CreateSkyFlat();
                     flat.GetIterations().Iterations = fc.Count;
                     flat.MinExposure = fc.MinExposure;
                     flat.MaxExposure = fc.MaxExposure;
@@ -499,6 +494,47 @@ public static class FlatWizardService
                         () => flat.GetSetBrightnessItem().Brightness);
                 }
         }
+    }
+
+    /// <summary>
+    /// NINA 3.3 added an ISymbolBroker parameter to SkyFlat's constructor. The Windows build compiles
+    /// against the 3.1.2 packages, so a direct `new SkyFlat(...)` throws MissingMethodException on 3.3,
+    /// and since the JIT resolves BuildFlat as a whole, that broke every flat mode, not just SkyFlat.
+    /// Use whichever constructor the running NINA has. SkyFlat only passes the broker on in Clone(),
+    /// which a flat run never calls, so null is fine where the plugin cannot supply one.
+    /// </summary>
+    private static SkyFlat CreateSkyFlat()
+    {
+        var m = TouchNStars.Mediators;
+#if PINS
+        return new SkyFlat(m.Profile, m.Camera, m.Telescope, m.Imaging, m.ImageSaveMediator,
+            m.ImageHistory, m.FilterWheel, m.TwilightCalculator, m.SymbolBroker);
+#else
+        object[] known = [m.Profile, m.Camera, m.Telescope, m.Imaging, m.ImageSaveMediator,
+            m.ImageHistory, m.FilterWheel, m.TwilightCalculator];
+
+        foreach (var ctor in typeof(SkyFlat).GetConstructors().OrderBy(c => c.GetParameters().Length))
+        {
+            var parameters = ctor.GetParameters();
+            if (parameters.Length < known.Length) continue;
+
+            var matches = true;
+            for (int i = 0; i < parameters.Length && matches; i++)
+            {
+                var type = parameters[i].ParameterType;
+                matches = i < known.Length
+                    ? known[i] == null || type.IsInstanceOfType(known[i])
+                    : !type.IsValueType;
+            }
+            if (!matches) continue;
+
+            var args = new object[parameters.Length];
+            Array.Copy(known, args, known.Length);
+            return (SkyFlat)ctor.Invoke(BindingFlags.DoNotWrapExceptions, null, args, null);
+        }
+
+        throw new NotSupportedException("Sky flats are not supported by this NINA version");
+#endif
     }
 
     private static NINA.Sequencer.Conditions.LoopCondition GetIterations(SequentialContainer flat) => flat switch

@@ -139,6 +139,217 @@ public class RawImageEncoderTests
         Assert.Equal(16, (int)header["bitDepth"]);
     }
 
+    // Mono frame with distinct values: pixel (x, y) = 100 * y + x.
+    private static ushort[] Ramp(int width, int height)
+    {
+        var plane = new ushort[width * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                plane[y * width + x] = (ushort)(100 * y + x);
+        return plane;
+    }
+
+    [Fact]
+    public void RegionStats_Mono_MatchDirectComputation()
+    {
+        ushort[] plane = Ramp(6, 4);
+        plane[1 * 6 + 2] = 4095; // one clipped pixel inside the region
+
+        var result = RawImageEncoder.ComputeRegionStats(new[] { plane }, 6, 4, 12, null, 1, 1, 3, 2, "img");
+
+        // Region x 1..3, y 1..2: 101 4095 103 / 201 202 203
+        ushort[] inside = { 101, 4095, 103, 201, 202, 203 };
+        var s = Assert.Single(result.Stats);
+        Assert.Equal("L", s.Channel);
+        Assert.Equal(6, s.Count);
+        Assert.Equal(101, s.Min);
+        Assert.Equal(4095, s.Max);
+        Assert.Equal(inside.Average(v => (double)v), s.Mean, 9);
+        Assert.Equal(201, s.Median); // lower median of 101 103 201 202 203 4095
+        Assert.Equal(2, s.Mad);      // deviations from 201: 0 1 2 98 100 3894, lower median 2
+        Assert.Equal(1, s.CountAtMin);
+        Assert.Equal(1, s.CountAtMax);
+        Assert.Equal(1.0 / 6, s.ClipHigh, 9);
+        Assert.Equal("img", result.ImageId);
+        Assert.Equal(12, result.BitDepth);
+        Assert.False(result.IsBayered);
+        Assert.Equal((1, 1, 3, 2), (result.Region.X, result.Region.Y, result.Region.W, result.Region.H));
+    }
+
+    [Fact]
+    public void RegionStats_CountsRepeatedExtremes()
+    {
+        ushort[] plane = { 7, 7, 9, 9, 9, 8 };
+        var s = Assert.Single(RawImageEncoder.ComputeRegionStats(new[] { plane }, 3, 2, 16, null, 0, 0, 3, 2, "img").Stats);
+        Assert.Equal(2, s.CountAtMin);
+        Assert.Equal(3, s.CountAtMax);
+    }
+
+    [Fact]
+    public void RegionStats_ClampsToImage()
+    {
+        var result = RawImageEncoder.ComputeRegionStats(new[] { Ramp(6, 4) }, 6, 4, 16, null, -2, 2, 5, 10, "img");
+
+        Assert.Equal((0, 2, 3, 2), (result.Region.X, result.Region.Y, result.Region.W, result.Region.H));
+        var s = Assert.Single(result.Stats);
+        Assert.Equal(6, s.Count);
+        Assert.Equal(200, s.Min);
+        Assert.Equal(302, s.Max);
+    }
+
+    [Fact]
+    public void RegionStats_HugeSizeClampsInsteadOfOverflowing()
+    {
+        // x + w overflows int; added in 64 bit it clamps to the image like any region past the edge.
+        var result = RawImageEncoder.ComputeRegionStats(new[] { Ramp(6, 4) }, 6, 4, 16, null, 1, 0, int.MaxValue, int.MaxValue, "img");
+
+        Assert.Equal((1, 0, 5, 4), (result.Region.X, result.Region.Y, result.Region.W, result.Region.H));
+        Assert.Equal(20, Assert.Single(result.Stats).Count);
+    }
+
+    [Theory]
+    [InlineData(6, 0, 1, 1)]   // right of the image
+    [InlineData(0, -5, 2, 5)]  // ends exactly at the top edge
+    [InlineData(0, 0, 0, 2)]   // zero width
+    [InlineData(0, 0, 2, -1)]  // negative height
+    public void RegionStats_RejectsRegionsWithoutPixels(int x, int y, int w, int h)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            RawImageEncoder.ComputeRegionStats(new[] { Ramp(6, 4) }, 6, 4, 16, null, x, y, w, h, "img"));
+    }
+
+    [Theory]
+    [InlineData("RGGB")]
+    [InlineData("BGGR")]
+    [InlineData("GRBG")]
+    [InlineData("GBRG")]
+    public void RegionStats_Bayer_SplitsSamplesByCfaSite(string pattern)
+    {
+        // 4x4 CFA frame: every sample carries its site's color in the value (R=1000s, G=2000s,
+        // B=3000s), so a sample counted in the wrong channel breaks that channel's range.
+        const int width = 4, height = 4;
+        var plane = new ushort[width * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                char site = pattern[(y % 2) * 2 + x % 2];
+                int band = site == 'R' ? 1000 : site == 'G' ? 2000 : 3000;
+                plane[y * width + x] = (ushort)(band + y * width + x);
+            }
+
+        var result = RawImageEncoder.ComputeRegionStats(new[] { plane }, width, height, 16, pattern, 0, 0, 4, 4, "img");
+
+        Assert.True(result.IsBayered);
+        Assert.Equal(pattern, result.BayerPattern);
+        Assert.Equal(new[] { "R", "G", "B" }, result.Stats.Select(s => s.Channel));
+        Assert.Equal(new long[] { 4, 8, 4 }, result.Stats.Select(s => s.Count)); // greens pooled
+        for (int c = 0; c < 3; c++)
+        {
+            int band = 1000 * (c + 1);
+            Assert.InRange(result.Stats[c].Min, band, band + 15);
+            Assert.InRange(result.Stats[c].Max, band, band + 15);
+        }
+    }
+
+    [Fact]
+    public void RegionStats_Bayer_FollowsAbsolutePhaseForOddOrigin()
+    {
+        // RGGB, region starting at (1, 1): its first sample sits on a B site, not an R site.
+        var plane = new ushort[16];
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                plane[y * 4 + x] = (ushort)((y % 2, x % 2) switch { (0, 0) => 1, (1, 1) => 3, _ => 2 });
+
+        var result = RawImageEncoder.ComputeRegionStats(new[] { plane }, 4, 4, 16, "RGGB", 1, 1, 1, 1, "img");
+
+        Assert.Equal(new long[] { 0, 0, 1 }, result.Stats.Select(s => s.Count));
+        Assert.Equal(3, result.Stats[2].Max);
+        Assert.Equal(0, result.Stats[0].CountAtMax); // empty channel stays zero
+    }
+
+    [Fact]
+    public void RegionStats_Bayer_ShowsSingleClippedGreenThatSuperpixelHides()
+    {
+        // RGGB 2x2 cell with one green site clipped.
+        ushort[] cell = { 1000, 65535, 1200, 900 };
+
+        ushort[][] superpixel = RawImageEncoder.Superpixel(cell, 2, 2, "RGGB", out _, out _);
+        Assert.True(superpixel[1][0] < 65535); // the averaged green hides the clipped site
+
+        var green = RawImageEncoder.ComputeRegionStats(new[] { cell }, 2, 2, 16, "RGGB", 0, 0, 2, 2, "img").Stats[1];
+        Assert.Equal(2, green.Count);
+        Assert.Equal(65535, green.Max);
+        Assert.Equal(1, green.CountAtMax);
+        Assert.Equal(0.5, green.ClipHigh, 9);
+    }
+
+    [Fact]
+    public void RegionStats_SeparatePlanes_OneRowPerPlane()
+    {
+        ushort[] r = { 1, 2, 3, 4 }, g = { 10, 20, 30, 40 }, b = { 100, 200, 300, 400 };
+
+        var result = RawImageEncoder.ComputeRegionStats(new[] { r, g, b }, 2, 2, 16, null, 1, 0, 1, 2, "img");
+
+        Assert.False(result.IsBayered);
+        Assert.Equal(new[] { "R", "G", "B" }, result.Stats.Select(s => s.Channel));
+        Assert.Equal(new[] { 2, 20, 200 }, result.Stats.Select(s => s.Min));
+        Assert.Equal(new[] { 4, 40, 400 }, result.Stats.Select(s => s.Max));
+    }
+
+    [Fact]
+    public void RegionStats_RaisesBitDepthWhenDataExceedsIt()
+    {
+        ushort[] plane = { 100, 60000 };
+        var result = RawImageEncoder.ComputeRegionStats(new[] { plane }, 2, 1, 12, null, 0, 0, 2, 1, "img");
+        Assert.Equal(16, result.BitDepth);
+    }
+
+    [Fact]
+    public void RegionStats_DarkRegionKeepsTheFrameBitDepth()
+    {
+        // A camera reporting 14 bit whose driver scales to 16 bit: the frame has data above
+        // 16383, the dark top row does not. The region must still be measured against 16 bit,
+        // like the whole-image payload, so its 16383 is not reported as clipped.
+        ushort[] plane = { 16383, 1000, 1000, 60000 };
+        int frameBitDepth = RawImageEncoder.FrameBitDepth(new[] { plane }, 14);
+        var result = RawImageEncoder.ComputeRegionStats(new[] { plane }, 2, 2, frameBitDepth, null, 0, 0, 2, 1, "img");
+
+        Assert.Equal(16, frameBitDepth);
+        Assert.Equal(16, result.BitDepth);
+        Assert.Equal(0, result.Stats[0].ClipHigh);
+    }
+
+    [Theory]
+    [InlineData(14, 16383, 14)] // native 14-bit data at full scale
+    [InlineData(14, 16384, 16)] // scaled to 16 bit by the driver
+    [InlineData(12, 0, 12)]
+    [InlineData(16, 65535, 16)]
+    [InlineData(20, 100, 16)]   // declared depth is clamped to 1..16, as in Encode
+    public void FrameBitDepth_RaisesOnlyWhenDataExceedsTheDeclaredRange(int declared, int brightest, int expected)
+    {
+        ushort[] plane = { 0, 7, (ushort)brightest, 3 };
+        Assert.Equal(expected, RawImageEncoder.FrameBitDepth(new[] { new ushort[] { 1, 2 }, plane }, declared));
+    }
+
+    [Fact]
+    public void RegionStats_RejectsBayerPatternWithSeveralPlanes()
+    {
+        // A pattern describes a single CFA plane; with three planes the caller mixed up formats.
+        var planes = new[] { new ushort[4], new ushort[4], new ushort[4] };
+        Assert.Throws<ArgumentException>(() =>
+            RawImageEncoder.ComputeRegionStats(planes, 2, 2, 16, "RGGB", 0, 0, 2, 2, "img"));
+    }
+
+    [Theory]
+    [InlineData("RRGB")]
+    [InlineData("RGB")]
+    [InlineData("")]
+    public void RegionStats_RejectsUnsupportedBayerPattern(string pattern)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            RawImageEncoder.ComputeRegionStats(new[] { new ushort[4] }, 2, 2, 16, pattern, 0, 0, 2, 2, "img"));
+    }
+
     private static byte[] Gunzip(byte[] data)
     {
         using var input = new GZipStream(new MemoryStream(data), CompressionMode.Decompress);

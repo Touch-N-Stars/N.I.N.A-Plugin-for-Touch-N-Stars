@@ -1,5 +1,10 @@
 # Touch 'N' Stars
 
+## 1.6.4.0
+- fix(phd2): `set-algo-param` sends the value unchanged instead of adding 0.001, so 100 % weights can be set again (#116)
+- fix(flats): the SkyFlat constructor is picked at runtime, so flat runs (all modes) work again on NINA 3.3 instead of failing with `MissingMethodException`
+- Raw image region statistics (`/api/raw-image/{prepared|history|livestack}/region-stats`, #126): exact min, max, mean, median, MAD, clip fractions and pixel counts per channel for a rectangle in full-resolution pixels; colour frames are measured on the raw CFA samples. Raw-image JSON replies are now sent without a UTF-8 BOM. Thanks to @mjm1138 for this contribution!
+
 ## 1.6.3.0
 - Atlas: new survey `nsns-cont` (NSNS DR0.2 RGB continuum, rgb8), orders 3–5
 

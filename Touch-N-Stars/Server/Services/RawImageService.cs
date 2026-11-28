@@ -61,6 +61,18 @@ namespace TouchNStars.Server.Services {
         private static string cachedKey;
         private static byte[] cachedPayload;
 
+        // Separate one-entry cache of full-resolution pixels for region statistics (see
+        // LoadPixelsCachedAsync), so region requests never evict the encoded payload above.
+        private static readonly TimeSpan PixelCacheIdle = TimeSpan.FromMinutes(1);
+        private static readonly Timer PixelCacheTimer = new(_ => ReleasePixelCache(), null, Timeout.Infinite, Timeout.Infinite);
+        private static string pixelCacheId;
+        private static SourcePixels pixelCache;
+
+        // The last frame's bit depth for region statistics (RawImageEncoder.FrameBitDepth): one
+        // pass over the whole frame, done once per frame rather than on every move of the region.
+        private static string frameBitDepthId;
+        private static int frameBitDepth;
+
         public static void Attach(IImagingMediator imagingMediator, IImageSaveMediator imageSaveMediator) {
             Detach();
             imaging = imagingMediator;
@@ -79,6 +91,8 @@ namespace TouchNStars.Server.Services {
                 cachedKey = null;
                 cachedPayload = null;
             }
+            PixelCacheTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            ReleasePixelCache();
         }
 
         private static void OnImagePrepared(object sender, ImagePreparedEventArgs e) {
@@ -108,7 +122,50 @@ namespace TouchNStars.Server.Services {
             }
         }
 
-        public Task<byte[]> GetPreparedAsync(int maxDim, bool gzip, CancellationToken ct) {
+        public Task<byte[]> GetPreparedAsync(int maxDim, bool gzip, CancellationToken ct) =>
+            EncodeSourceAsync(ResolvePrepared(), maxDim, gzip, ct);
+
+        public Task<byte[]> GetHistoryAsync(string fileName, long? index, double? mean, double? median,
+                                            int maxDim, bool gzip, CancellationToken ct) =>
+            EncodeSourceAsync(ResolveHistory(fileName, index, mean, median), maxDim, gzip, ct);
+
+        public Task<byte[]> GetLivestackAsync(string target, string filter, int maxDim, bool gzip, CancellationToken ct) =>
+            EncodeSourceAsync(ResolveLivestack(target, filter), maxDim, gzip, ct);
+
+        public Task<RawImageEncoder.RegionStats> GetPreparedRegionStatsAsync(RawImageEncoder.Region region, CancellationToken ct) =>
+            RegionStatsAsync(ResolvePrepared(), region, ct);
+
+        public Task<RawImageEncoder.RegionStats> GetHistoryRegionStatsAsync(string fileName, long? index, double? mean, double? median,
+                                                                            RawImageEncoder.Region region, CancellationToken ct) =>
+            RegionStatsAsync(ResolveHistory(fileName, index, mean, median), region, ct);
+
+        public Task<RawImageEncoder.RegionStats> GetLivestackRegionStatsAsync(string target, string filter,
+                                                                              RawImageEncoder.Region region, CancellationToken ct) =>
+            RegionStatsAsync(ResolveLivestack(target, filter), region, ct);
+
+        /// <summary>
+        /// A frame one of the raw-image routes serves, identified before any pixel is loaded so
+        /// the caches can be checked first. The histogram routes and the region statistics share
+        /// this resolution.
+        /// </summary>
+        private sealed class RawSource {
+            public string ImageId;
+            public Func<Task<SourcePixels>> Load;
+            // Frames read from disk are kept briefly for repeated region requests; the prepared
+            // image is already in memory.
+            public bool CachePixels;
+        }
+
+        /// <summary>Full-resolution data: one CFA or mono plane, or one plane per channel.</summary>
+        private sealed class SourcePixels {
+            public ushort[][] Planes;
+            public int Width;
+            public int Height;
+            public int BitDepth;
+            public string BayerPattern; // null unless Planes is a single CFA plane
+        }
+
+        private static RawSource ResolvePrepared() {
             IImageData image;
             long sequence;
             lock (StateLock) {
@@ -119,9 +176,10 @@ namespace TouchNStars.Server.Services {
                 throw new RawImageException(404, "no-image", "No prepared image available");
             }
 
-            string imageId = $"prepared-{sequence}";
-            return EncodeCachedAsync($"{imageId}|{maxDim}|{gzip}", ct,
-                () => EncodeImageData(image, imageId, maxDim, gzip));
+            return new RawSource {
+                ImageId = $"prepared-{sequence}",
+                Load = () => Task.FromResult(FromImageData(image)),
+            };
         }
 
         /// <summary>
@@ -129,8 +187,7 @@ namespace TouchNStars.Server.Services {
         /// index - confirmed against the entry's mean and median, so a history that drifted out
         /// of step (e.g. ninaAPI restarted on its own) fails instead of showing another frame.
         /// </summary>
-        public async Task<byte[]> GetHistoryAsync(string fileName, long? index, double? mean, double? median,
-                                                  int maxDim, bool gzip, CancellationToken ct) {
+        private static RawSource ResolveHistory(string fileName, long? index, double? mean, double? median) {
             string path;
             if (!string.IsNullOrWhiteSpace(fileName)) {
                 // GetInvalidFileNameChars() is nearly empty on Linux, and the name doubles as a
@@ -151,14 +208,14 @@ namespace TouchNStars.Server.Services {
                 throw new RawImageException(404, "file-not-found", "Image file not found");
             }
 
-            string imageId = $"file-{path}-{File.GetLastWriteTimeUtc(path).Ticks}";
-            return await EncodeCachedAsync($"{imageId}|{maxDim}|{gzip}", ct, async () => {
-                IImageData data = await LoadFileAsync(path).ConfigureAwait(false);
-                return EncodeImageData(data, imageId, maxDim, gzip);
-            }).ConfigureAwait(false);
+            return new RawSource {
+                ImageId = $"file-{path}-{File.GetLastWriteTimeUtc(path).Ticks}",
+                Load = async () => FromImageData(await LoadFileAsync(path).ConfigureAwait(false)),
+                CachePixels = true,
+            };
         }
 
-        public async Task<byte[]> GetLivestackAsync(string target, string filter, int maxDim, bool gzip, CancellationToken ct) {
+        private static RawSource ResolveLivestack(string target, string filter) {
             if (string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(filter)) {
                 throw new RawImageException(400, "invalid-parameters", "target and filter are required");
             }
@@ -183,23 +240,107 @@ namespace TouchNStars.Server.Services {
                     : new RawImageException(404, "file-not-found", "Stack file not found");
             }
 
-            string imageId = "livestack-" + string.Join("|", paths.Select(p => $"{p}-{File.GetLastWriteTimeUtc(p).Ticks}"));
-            return await EncodeCachedAsync($"{imageId}|{maxDim}|{gzip}", ct, async () => {
-                var channels = new ushort[paths.Length][];
-                int width = 0, height = 0;
-                for (int i = 0; i < paths.Length; i++) {
-                    // Stacks are normalised float FITS; NINA's FloatConverter maps 0..1 to 0..65535.
-                    IImageData data = await LoadFileAsync(paths[i]).ConfigureAwait(false);
-                    if (i > 0 && (data.Properties.Width != width || data.Properties.Height != height)) {
-                        throw new RawImageException(409, "livestack-rgb-unsupported", "Channel stacks differ in size");
+            return new RawSource {
+                ImageId = "livestack-" + string.Join("|", paths.Select(p => $"{p}-{File.GetLastWriteTimeUtc(p).Ticks}")),
+                Load = async () => {
+                    var channels = new ushort[paths.Length][];
+                    int width = 0, height = 0;
+                    for (int i = 0; i < paths.Length; i++) {
+                        // Stacks are normalised float FITS; NINA's FloatConverter maps 0..1 to 0..65535.
+                        IImageData data = await LoadFileAsync(paths[i]).ConfigureAwait(false);
+                        if (i > 0 && (data.Properties.Width != width || data.Properties.Height != height)) {
+                            throw new RawImageException(409, "livestack-rgb-unsupported", "Channel stacks differ in size");
+                        }
+                        width = data.Properties.Width;
+                        height = data.Properties.Height;
+                        channels[i] = data.Data.FlatArray;
                     }
-                    width = data.Properties.Width;
-                    height = data.Properties.Height;
-                    channels[i] = data.Data.FlatArray;
+                    return new SourcePixels { Planes = channels, Width = width, Height = height, BitDepth = 16 };
+                },
+                CachePixels = true,
+            };
+        }
+
+        private static SourcePixels FromImageData(IImageData data) => new() {
+            Planes = new[] { data.Data.FlatArray },
+            Width = data.Properties.Width,
+            Height = data.Properties.Height,
+            BitDepth = data.Properties.BitDepth,
+            BayerPattern = data.Properties.IsBayered ? ImagePreviewService.ResolveBayerPattern(data).ToString() : null,
+        };
+
+        private static Task<byte[]> EncodeSourceAsync(RawSource source, int maxDim, bool gzip, CancellationToken ct) =>
+            EncodeCachedAsync($"{source.ImageId}|{maxDim}|{gzip}", ct, async () =>
+                EncodePixels(await source.Load().ConfigureAwait(false), source.ImageId, maxDim, gzip));
+
+        private static async Task<RawImageEncoder.RegionStats> RegionStatsAsync(RawSource source, RawImageEncoder.Region region,
+                                                                                CancellationToken ct) {
+            SourcePixels pixels = source.CachePixels
+                ? await LoadPixelsCachedAsync(source, ct).ConfigureAwait(false)
+                : await source.Load().ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            try {
+                // A whole 60 MP frame takes a moment; keep it off the request thread.
+                return await Task.Run(() => RawImageEncoder.ComputeRegionStats(
+                    pixels.Planes, pixels.Width, pixels.Height, FrameBitDepthCached(source.ImageId, pixels), pixels.BayerPattern,
+                    region.X, region.Y, region.W, region.H, source.ImageId), ct).ConfigureAwait(false);
+            } catch (ArgumentOutOfRangeException) {
+                throw new RawImageException(400, "region-outside-image", "The region does not overlap the image");
+            }
+        }
+
+        /// <summary>
+        /// One-entry cache of the last frame read from disk for region statistics, so moving the
+        /// region over a saved frame does not reload the file each time. Released after a minute
+        /// without requests, because a large frame holds a few hundred MB.
+        /// </summary>
+        private static async Task<SourcePixels> LoadPixelsCachedAsync(RawSource source, CancellationToken ct) {
+            lock (StateLock) {
+                if (pixelCacheId == source.ImageId && pixelCache != null) {
+                    PixelCacheTimer.Change(PixelCacheIdle, Timeout.InfiniteTimeSpan);
+                    return pixelCache;
                 }
-                return RawImageEncoder.Encode(channels, width, height, 16, maxDim, imageId,
-                    width, height, isBayered: false, bayerPattern: null, gzip);
-            }).ConfigureAwait(false);
+            }
+
+            // Same gate as the encoder: loading a large frame is the expensive part of both.
+            await EncodeGate.WaitAsync(ct).ConfigureAwait(false);
+            try {
+                lock (StateLock) {
+                    if (pixelCacheId == source.ImageId && pixelCache != null) return pixelCache;
+                    // Drop the previous frame before loading the next one.
+                    pixelCacheId = null;
+                    pixelCache = null;
+                }
+                ct.ThrowIfCancellationRequested();
+                SourcePixels pixels = await Task.Run(source.Load, ct).ConfigureAwait(false);
+                lock (StateLock) {
+                    pixelCacheId = source.ImageId;
+                    pixelCache = pixels;
+                    PixelCacheTimer.Change(PixelCacheIdle, Timeout.InfiniteTimeSpan);
+                }
+                return pixels;
+            } finally {
+                EncodeGate.Release();
+            }
+        }
+
+        private static int FrameBitDepthCached(string imageId, SourcePixels pixels) {
+            lock (StateLock) {
+                if (frameBitDepthId == imageId) return frameBitDepth;
+            }
+            int depth = RawImageEncoder.FrameBitDepth(pixels.Planes, pixels.BitDepth);
+            lock (StateLock) {
+                frameBitDepthId = imageId;
+                frameBitDepth = depth;
+            }
+            return depth;
+        }
+
+        private static void ReleasePixelCache() {
+            lock (StateLock) {
+                pixelCacheId = null;
+                pixelCache = null;
+            }
         }
 
         private static async Task<byte[]> EncodeCachedAsync(string key, CancellationToken ct, Func<Task<byte[]>> encode) {
@@ -228,20 +369,16 @@ namespace TouchNStars.Server.Services {
         private static Task<byte[]> EncodeCachedAsync(string key, CancellationToken ct, Func<byte[]> encode) =>
             EncodeCachedAsync(key, ct, () => Task.FromResult(encode()));
 
-        private static byte[] EncodeImageData(IImageData data, string imageId, int maxDim, bool gzip) {
-            int width = data.Properties.Width;
-            int height = data.Properties.Height;
-            ushort[] flat = data.Data.FlatArray;
-
-            if (data.Properties.IsBayered) {
-                var pattern = ImagePreviewService.ResolveBayerPattern(data);
-                ushort[][] rgb = RawImageEncoder.Superpixel(flat, width, height, pattern.ToString(), out int w, out int h);
-                return RawImageEncoder.Encode(rgb, w, h, data.Properties.BitDepth, maxDim, imageId,
-                    width, height, isBayered: true, bayerPattern: pattern.ToString(), gzip);
+        private static byte[] EncodePixels(SourcePixels pixels, string imageId, int maxDim, bool gzip) {
+            if (pixels.BayerPattern != null) {
+                ushort[][] rgb = RawImageEncoder.Superpixel(pixels.Planes[0], pixels.Width, pixels.Height, pixels.BayerPattern,
+                    out int w, out int h);
+                return RawImageEncoder.Encode(rgb, w, h, pixels.BitDepth, maxDim, imageId,
+                    pixels.Width, pixels.Height, isBayered: true, bayerPattern: pixels.BayerPattern, gzip);
             }
 
-            return RawImageEncoder.Encode(new[] { flat }, width, height, data.Properties.BitDepth, maxDim, imageId,
-                width, height, isBayered: false, bayerPattern: null, gzip);
+            return RawImageEncoder.Encode(pixels.Planes, pixels.Width, pixels.Height, pixels.BitDepth, maxDim, imageId,
+                pixels.Width, pixels.Height, isBayered: false, bayerPattern: null, gzip);
         }
 
         private static async Task<IImageData> LoadFileAsync(string path) {

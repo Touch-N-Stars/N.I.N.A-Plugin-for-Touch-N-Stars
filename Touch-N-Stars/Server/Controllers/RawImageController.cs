@@ -19,6 +19,11 @@ namespace TouchNStars.Server.Controllers;
 ///       (or index=...&amp;mean=...&amp;median=... when the backend's history has no file name)
 ///   GET /api/raw-image/livestack?target=...&amp;filter=...&amp;maxDim=... — a Livestack stack
 /// The body is the binary container described in RawImageEncoder.WriteContainer.
+///
+/// Each source also has a region-stats route that takes the same source parameters plus
+/// x, y, w, h in full-resolution pixels and answers JSON (RawImageEncoder.RegionStats):
+///   GET /api/raw-image/{prepared|history|livestack}/region-stats?x=...&amp;y=...&amp;w=...&amp;h=...
+///
 /// Errors are JSON: { success: false, code, error }.
 /// </summary>
 public class RawImageController : WebApiController
@@ -26,6 +31,9 @@ public class RawImageController : WebApiController
     private const int DefaultMaxDim = 1600;
     private const int MaxMaxDim = 4096;
     private static readonly RawImageService Service = new();
+    // Encoding.UTF8 would prefix the JSON with a BOM, which non-browser JSON parsers reject
+    // (same as HipsSurveyController).
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     [Route(HttpVerbs.Get, "/raw-image/prepared")]
     public Task GetPrepared() =>
@@ -44,6 +52,57 @@ public class RawImageController : WebApiController
             HttpContext.Request.QueryString["target"],
             HttpContext.Request.QueryString["filter"],
             ParseMaxDim(), gzip, HttpContext.CancellationToken));
+
+    [Route(HttpVerbs.Get, "/raw-image/prepared/region-stats")]
+    public Task GetPreparedRegionStats() =>
+        SendRegionStats(region => Service.GetPreparedRegionStatsAsync(region, HttpContext.CancellationToken));
+
+    [Route(HttpVerbs.Get, "/raw-image/history/region-stats")]
+    public Task GetHistoryRegionStats() =>
+        SendRegionStats(region => Service.GetHistoryRegionStatsAsync(
+            HttpContext.Request.QueryString["filename"],
+            ParseLong("index"), ParseDouble("mean"), ParseDouble("median"),
+            region, HttpContext.CancellationToken));
+
+    [Route(HttpVerbs.Get, "/raw-image/livestack/region-stats")]
+    public Task GetLivestackRegionStats() =>
+        SendRegionStats(region => Service.GetLivestackRegionStatsAsync(
+            HttpContext.Request.QueryString["target"],
+            HttpContext.Request.QueryString["filter"],
+            region, HttpContext.CancellationToken));
+
+    private async Task SendRegionStats(Func<RawImageEncoder.Region, Task<RawImageEncoder.RegionStats>> produce)
+    {
+        try
+        {
+            int? x = ParseInt("x"), y = ParseInt("y"), w = ParseInt("w"), h = ParseInt("h");
+            if (x == null || y == null || w == null || h == null || w <= 0 || h <= 0)
+            {
+                await SendError(400, "invalid-region", "x, y, w and h are required; w and h must be positive");
+                return;
+            }
+
+            var region = new RawImageEncoder.Region { X = x.Value, Y = y.Value, W = w.Value, H = h.Value };
+            RawImageEncoder.RegionStats stats = await produce(region);
+
+            HttpContext.Response.StatusCode = 200;
+            HttpContext.Response.Headers["Cache-Control"] = "no-store";
+            await HttpContext.SendStringAsync(JsonConvert.SerializeObject(stats), "application/json", Utf8NoBom);
+        }
+        catch (OperationCanceledException)
+        {
+            // The app moved the region again or closed the panel - nothing to send back.
+        }
+        catch (RawImageException ex)
+        {
+            await SendError(ex.StatusCode, ex.Code, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[RawImageController] {ex.Message}", ex);
+            await SendError(500, "internal-error", ex.Message);
+        }
+    }
 
     private async Task Send(Func<bool, Task<byte[]>> produce)
     {
@@ -86,6 +145,11 @@ public class RawImageController : WebApiController
         return Math.Min(value, MaxMaxDim);
     }
 
+    private int? ParseInt(string name) =>
+        int.TryParse(HttpContext.Request.QueryString[name], NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : null;
+
     private long? ParseLong(string name) =>
         long.TryParse(HttpContext.Request.QueryString[name], NumberStyles.Integer, CultureInfo.InvariantCulture, out long value)
             ? value
@@ -100,6 +164,6 @@ public class RawImageController : WebApiController
     {
         HttpContext.Response.StatusCode = statusCode;
         string json = JsonConvert.SerializeObject(new { success = false, code, error = message });
-        return HttpContext.SendStringAsync(json, "application/json", Encoding.UTF8);
+        return HttpContext.SendStringAsync(json, "application/json", Utf8NoBom);
     }
 }

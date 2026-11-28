@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using Newtonsoft.Json;
@@ -156,6 +157,173 @@ namespace TouchNStars.Server.Services {
             _ => p3,
         };
 
+        public sealed class Region {
+            [JsonProperty("x")] public int X { get; set; }
+            [JsonProperty("y")] public int Y { get; set; }
+            [JsonProperty("w")] public int W { get; set; }
+            [JsonProperty("h")] public int H { get; set; }
+        }
+
+        public sealed class RegionChannelStats {
+            [JsonProperty("channel")] public string Channel { get; set; }
+            [JsonProperty("count")] public long Count { get; set; }
+            [JsonProperty("min")] public int Min { get; set; }
+            [JsonProperty("max")] public int Max { get; set; }
+            [JsonProperty("mean")] public double Mean { get; set; }
+            [JsonProperty("median")] public int Median { get; set; }
+            [JsonProperty("mad")] public int Mad { get; set; }
+            [JsonProperty("clipLow")] public double ClipLow { get; set; }
+            [JsonProperty("clipHigh")] public double ClipHigh { get; set; }
+            [JsonProperty("countAtMin")] public long CountAtMin { get; set; }
+            [JsonProperty("countAtMax")] public long CountAtMax { get; set; }
+        }
+
+        public sealed class RegionStats {
+            [JsonProperty("imageId")] public string ImageId { get; set; }
+            [JsonProperty("sourceWidth")] public int SourceWidth { get; set; }
+            [JsonProperty("sourceHeight")] public int SourceHeight { get; set; }
+            [JsonProperty("bitDepth")] public int BitDepth { get; set; }
+            [JsonProperty("isBayered")] public bool IsBayered { get; set; }
+            [JsonProperty("bayerPattern")] public string BayerPattern { get; set; }
+            // The region the statistics cover: the requested one clamped to the image.
+            [JsonProperty("region")] public Region Region { get; set; }
+            [JsonProperty("stats")] public RegionChannelStats[] Stats { get; set; }
+        }
+
+        /// <summary>
+        /// Exact statistics of a rectangle of the full-resolution data. A bayered frame passes its
+        /// single CFA plane and pattern: every sample is counted in the color of its CFA site, the
+        /// two green sites pooled, so a single clipped pixel shows up in max and countAtMax (the
+        /// superpixel used for the whole-image histogram averages the greens). Other frames pass
+        /// one plane per channel. The region is clamped to the image; a region without any pixel
+        /// of the image throws ArgumentOutOfRangeException.
+        /// frameBitDepth is the whole frame's (FrameBitDepth), so a dark region of a frame that a
+        /// driver scaled to 16 bit is measured against the same full scale as the whole image.
+        /// </summary>
+        public static RegionStats ComputeRegionStats(ushort[][] planes, int width, int height, int frameBitDepth,
+                                                     string bayerPattern, int x, int y, int w, int h, string imageId) {
+            if (planes == null || planes.Length == 0) {
+                throw new ArgumentException("At least one plane is required", nameof(planes));
+            }
+            if (w <= 0 || h <= 0) {
+                throw new ArgumentOutOfRangeException(nameof(w), "Region width and height must be positive");
+            }
+
+            int x0 = Math.Max(0, x), y0 = Math.Max(0, y);
+            int x1 = (int)Math.Min(width, (long)x + w), y1 = (int)Math.Min(height, (long)y + h);
+            if (x1 <= x0 || y1 <= y0) {
+                throw new ArgumentOutOfRangeException(nameof(x), "Region does not overlap the image");
+            }
+
+            bool bayered = bayerPattern != null;
+            string[] names;
+            uint[][] histograms;
+            if (bayered) {
+                int[] siteChannel = BayerSiteChannels(bayerPattern);
+                if (planes.Length != 1) {
+                    throw new ArgumentException("A bayered frame has exactly one CFA plane", nameof(planes));
+                }
+                names = new[] { "R", "G", "B" };
+                histograms = new[] { new uint[HistogramBins], new uint[HistogramBins], new uint[HistogramBins] };
+                ushort[] plane = planes[0];
+                for (int row = y0; row < y1; row++) {
+                    int offset = row * width;
+                    int siteRow = (row & 1) * 2;
+                    for (int col = x0; col < x1; col++) {
+                        histograms[siteChannel[siteRow + (col & 1)]][plane[offset + col]]++;
+                    }
+                }
+            } else {
+                names = planes.Length == 3 ? new[] { "R", "G", "B" }
+                    : Enumerable.Range(0, planes.Length).Select(c => planes.Length == 1 ? "L" : $"C{c}").ToArray();
+                histograms = new uint[planes.Length][];
+                for (int c = 0; c < planes.Length; c++) {
+                    var histogram = new uint[HistogramBins];
+                    ushort[] plane = planes[c];
+                    for (int row = y0; row < y1; row++) {
+                        int offset = row * width;
+                        for (int col = x0; col < x1; col++) {
+                            histogram[plane[offset + col]]++;
+                        }
+                    }
+                    histograms[c] = histogram;
+                }
+            }
+
+            // Only raises a frameBitDepth that understates the data, as Encode would.
+            int effectiveBitDepth = EffectiveBitDepth(histograms, frameBitDepth);
+            var stats = new RegionChannelStats[histograms.Length];
+            for (int c = 0; c < histograms.Length; c++) {
+                uint[] histogram = histograms[c];
+                ChannelStats s = ComputeStats(histogram, effectiveBitDepth);
+                long count = 0;
+                foreach (uint n in histogram) count += n;
+                stats[c] = new RegionChannelStats {
+                    Channel = names[c],
+                    Count = count,
+                    Min = s.Min,
+                    Max = s.Max,
+                    Mean = s.Mean,
+                    Median = s.Median,
+                    Mad = s.Mad,
+                    ClipLow = s.ClipLow,
+                    ClipHigh = s.ClipHigh,
+                    CountAtMin = count == 0 ? 0 : histogram[s.Min],
+                    CountAtMax = count == 0 ? 0 : histogram[s.Max],
+                };
+            }
+
+            return new RegionStats {
+                ImageId = imageId,
+                SourceWidth = width,
+                SourceHeight = height,
+                BitDepth = effectiveBitDepth,
+                IsBayered = bayered,
+                BayerPattern = bayerPattern,
+                Region = new Region { X = x0, Y = y0, W = x1 - x0, H = y1 - y0 },
+                Stats = stats,
+            };
+        }
+
+        // Channel index (0 = R, 1 = G, 2 = B) of each CFA site, row-major as in Superpixel.
+        private static int[] BayerSiteChannels(string pattern) {
+            if (pattern == null || pattern.Length != 4
+                || pattern.Count(ch => ch == 'R') != 1 || pattern.Count(ch => ch == 'G') != 2 || pattern.Count(ch => ch == 'B') != 1) {
+                throw new ArgumentException($"Unsupported bayer pattern '{pattern}'", nameof(pattern));
+            }
+            return pattern.Select(ch => ch == 'R' ? 0 : ch == 'G' ? 1 : 2).ToArray();
+        }
+
+        /// <summary>
+        /// The bit depth of a whole frame under the rule of EffectiveBitDepth, from its full-resolution
+        /// planes: the declared depth, or 16 once any sample exceeds the declared range. Region
+        /// statistics take it from here, not from the region's own pixels, which may all be dark.
+        /// </summary>
+        public static int FrameBitDepth(ushort[][] planes, int declaredBitDepth) {
+            int effective = Math.Clamp(declaredBitDepth, 1, 16);
+            if (effective == 16) return 16; // nothing can exceed it
+            int top = (1 << effective) - 1;
+            foreach (ushort[] plane in planes) {
+                foreach (ushort v in plane) {
+                    if (v > top) return 16;
+                }
+            }
+            return effective;
+        }
+
+        // Some drivers scale 12/14-bit data to 16 bit while the profile still reports the
+        // native depth. Values above the declared range would then normalise past 1.0.
+        private static int EffectiveBitDepth(uint[][] histograms, int bitDepth) {
+            int observedMax = 0;
+            foreach (uint[] histogram in histograms) {
+                for (int v = histogram.Length - 1; v > observedMax; v--) {
+                    if (histogram[v] != 0) { observedMax = v; break; }
+                }
+            }
+            int effective = Math.Clamp(bitDepth, 1, 16);
+            return observedMax > (1 << effective) - 1 ? 16 : effective;
+        }
+
         /// <summary>
         /// Integer-factor box average so the longer side fits maxDim. Only used for the preview
         /// planes - averaging narrows the noise distribution, so the histogram is always built
@@ -227,20 +395,11 @@ namespace TouchNStars.Server.Services {
                                     bool gzip) {
             var histograms = new uint[planes.Length][];
             var stats = new ChannelStats[planes.Length];
-            int observedMax = 0;
             for (int c = 0; c < planes.Length; c++) {
                 histograms[c] = BuildHistogram(planes[c]);
             }
-            for (int c = 0; c < planes.Length; c++) {
-                for (int v = histograms[c].Length - 1; v > observedMax; v--) {
-                    if (histograms[c][v] != 0) { observedMax = v; break; }
-                }
-            }
 
-            // Some drivers scale 12/14-bit data to 16 bit while the profile still reports the
-            // native depth. Values above the declared range would then normalise past 1.0.
-            int effectiveBitDepth = Math.Clamp(bitDepth, 1, 16);
-            if (observedMax > (1 << effectiveBitDepth) - 1) effectiveBitDepth = 16;
+            int effectiveBitDepth = EffectiveBitDepth(histograms, bitDepth);
 
             for (int c = 0; c < planes.Length; c++) {
                 stats[c] = ComputeStats(histograms[c], effectiveBitDepth);
